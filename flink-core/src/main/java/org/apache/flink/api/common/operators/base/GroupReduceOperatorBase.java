@@ -41,12 +41,12 @@ import org.apache.flink.api.common.typeutils.CompositeType;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 
-import com.google.common.base.Preconditions;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
  * @see org.apache.flink.api.common.functions.GroupReduceFunction
@@ -181,7 +181,7 @@ public class GroupReduceOperatorBase<IN, OUT, FT extends GroupReduceFunction<IN,
 		}
 
 		if(sortColumns.length == 0) { // => all reduce. No comparator
-			Preconditions.checkArgument(sortOrderings.length == 0);
+			checkArgument(sortOrderings.length == 0);
 		} else {
 			final TypeComparator<IN> sortComparator = getTypeComparator(inputType, sortColumns, sortOrderings, executionConfig);
 			Collections.sort(inputData, new Comparator<IN>() {
@@ -198,8 +198,8 @@ public class GroupReduceOperatorBase<IN, OUT, FT extends GroupReduceFunction<IN,
 		ArrayList<OUT> result = new ArrayList<OUT>();
 
 		if (inputData.size() > 0) {
+			final TypeSerializer<IN> inputSerializer = inputType.createSerializer(executionConfig);
 			if (keyColumns.length == 0) {
-				final TypeSerializer<IN> inputSerializer = inputType.createSerializer(executionConfig);
 				TypeSerializer<OUT> outSerializer = getOperatorInfo().getOutputType().createSerializer(executionConfig);
 				List<IN> inputDataCopy = new ArrayList<IN>(inputData.size());
 				for (IN in : inputData) {
@@ -209,7 +209,6 @@ public class GroupReduceOperatorBase<IN, OUT, FT extends GroupReduceFunction<IN,
 
 				function.reduce(inputDataCopy, collector);
 			} else {
-				final TypeSerializer<IN> inputSerializer = inputType.createSerializer(executionConfig);
 				boolean[] keyOrderings = new boolean[keyColumns.length];
 				final TypeComparator<IN> comparator = getTypeComparator(inputType, keyColumns, keyOrderings, executionConfig);
 

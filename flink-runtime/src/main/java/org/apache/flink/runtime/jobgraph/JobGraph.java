@@ -22,25 +22,26 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.FSDataInputStream;
-import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.blob.BlobClient;
-import org.apache.flink.runtime.blob.BlobKey;
-import org.apache.flink.runtime.jobgraph.tasks.JobSnapshottingSettings;
+import org.apache.flink.runtime.blob.PermanentBlobKey;
+import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
+import org.apache.flink.util.SerializedValue;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Collections;
 import java.util.Set;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * The JobGraph represents a Flink dataflow program, at the low level that the JobManager accepts.
@@ -48,30 +49,22 @@ import java.util.Set;
  *
  * <p>The JobGraph is a graph of vertices and intermediate results that are connected together to
  * form a DAG. Note that iterations (feedback edges) are currently not encoded inside the JobGraph
- * but inside certain special vertices that establish the feedback channel amongst themselves.</p>
+ * but inside certain special vertices that establish the feedback channel amongst themselves.
  *
  * <p>The JobGraph defines the job-wide configuration settings, while each vertex and intermediate result
- * define the characteristics of the concrete operation and intermediate data.</p>
+ * define the characteristics of the concrete operation and intermediate data.
  */
 public class JobGraph implements Serializable {
 
 	private static final long serialVersionUID = 1L;
 
-	// --------------------------------------------------------------------------------------------
-	// Members that define the structure / topology of the graph
-	// --------------------------------------------------------------------------------------------
+	// --- job and configuration ---
 
 	/** List of task vertices included in this job graph. */
 	private final Map<JobVertexID, JobVertex> taskVertices = new LinkedHashMap<JobVertexID, JobVertex>();
 
 	/** The job configuration attached to this job. */
 	private final Configuration jobConfiguration = new Configuration();
-
-	/** Set of JAR files required to run this job. */
-	private final List<Path> userJars = new ArrayList<Path>();
-
-	/** Set of blob keys identifying the JAR files required to run this job. */
-	private final List<BlobKey> userJarBlobKeys = new ArrayList<BlobKey>();
 
 	/** ID of this job. May be set if specific job id is desired (e.g. session management) */
 	private final JobID jobID;
@@ -87,88 +80,94 @@ public class JobGraph implements Serializable {
 	private boolean allowQueuedScheduling;
 
 	/** The mode in which the job is scheduled */
-	private ScheduleMode scheduleMode = ScheduleMode.FROM_SOURCES;
+	private ScheduleMode scheduleMode = ScheduleMode.LAZY_FROM_SOURCES;
 
-	/** The settings for asynchronous snapshots */
-	private JobSnapshottingSettings snapshotSettings;
+	// --- checkpointing ---
+
+	/** Job specific execution config */
+	private SerializedValue<ExecutionConfig> serializedExecutionConfig;
+
+	/** The settings for the job checkpoints */
+	private JobCheckpointingSettings snapshotSettings;
+
+	/** Savepoint restore settings. */
+	private SavepointRestoreSettings savepointRestoreSettings = SavepointRestoreSettings.none();
+
+	// --- attached resources ---
+
+	/** Set of JAR files required to run this job. */
+	private final List<Path> userJars = new ArrayList<Path>();
+
+	/** Set of blob keys identifying the JAR files required to run this job. */
+	private final List<PermanentBlobKey> userJarBlobKeys = new ArrayList<>();
 
 	/** List of classpaths required to run this job. */
 	private List<URL> classpaths = Collections.emptyList();
 
-	/** Job specific execution config */
-	private ExecutionConfig executionConfig;
-
 	// --------------------------------------------------------------------------------------------
 
 	/**
-	 * Constructs a new job graph with no name, a random job ID, and the given
-	 * {@link ExecutionConfig}.
-	 *
-	 * @param config The {@link ExecutionConfig} for the job.
-	 */
-	public JobGraph(ExecutionConfig config) {
-		this(null, config);
-	}
-
-	/**
 	 * Constructs a new job graph with the given name, the given {@link ExecutionConfig},
-	 * and a random job ID.
+	 * and a random job ID. The ExecutionConfig will be serialized and can't be modified afterwards.
 	 *
 	 * @param jobName The name of the job.
-	 * @param config The execution configuration of the job.
 	 */
-	public JobGraph(String jobName, ExecutionConfig config) {
-		this(null, jobName, config);
+	public JobGraph(String jobName) {
+		this(null, jobName);
 	}
 
 	/**
 	 * Constructs a new job graph with the given job ID (or a random ID, if {@code null} is passed),
 	 * the given name and the given execution configuration (see {@link ExecutionConfig}).
+	 * The ExecutionConfig will be serialized and can't be modified afterwards.
 	 *
 	 * @param jobId The id of the job. A random ID is generated, if {@code null} is passed.
 	 * @param jobName The name of the job.
-	 * @param config The execution configuration of the job.
 	 */
-	public JobGraph(JobID jobId, String jobName, ExecutionConfig config) {
+	public JobGraph(JobID jobId, String jobName) {
 		this.jobID = jobId == null ? new JobID() : jobId;
 		this.jobName = jobName == null ? "(unnamed job)" : jobName;
-		this.executionConfig = config == null ? new ExecutionConfig() : config;
+
+		try {
+			setExecutionConfig(new ExecutionConfig());
+		} catch (IOException e) {
+			// this should never happen, since an empty execution config is always serializable
+			throw new RuntimeException("bug, empty execution config is not serializable");
+		}
 	}
 
 	/**
 	 * Constructs a new job graph with no name, a random job ID, the given {@link ExecutionConfig}, and
-	 * the given job vertices.
+	 * the given job vertices. The ExecutionConfig will be serialized and can't be modified afterwards.
 	 *
-	 * @param config The execution configuration of the job.
 	 * @param vertices The vertices to add to the graph.
 	 */
-	public JobGraph(ExecutionConfig config, JobVertex... vertices) {
-		this(null, config, vertices);
+	public JobGraph(JobVertex... vertices) {
+		this(null, vertices);
 	}
 
 	/**
 	 * Constructs a new job graph with the given name, the given {@link ExecutionConfig}, a random job ID,
-	 * and the given job vertices.
+	 * and the given job vertices. The ExecutionConfig will be serialized and can't be modified afterwards.
 	 *
 	 * @param jobName The name of the job.
-	 * @param config The execution configuration of the job.
 	 * @param vertices The vertices to add to the graph.
 	 */
-	public JobGraph(String jobName, ExecutionConfig config, JobVertex... vertices) {
-		this(null, jobName, config, vertices);
+	public JobGraph(String jobName, JobVertex... vertices) {
+		this(null, jobName, vertices);
 	}
 
 	/**
 	 * Constructs a new job graph with the given name, the given {@link ExecutionConfig},
 	 * the given jobId or a random one if null supplied, and the given job vertices.
+	 * The ExecutionConfig will be serialized and can't be modified afterwards.
 	 *
 	 * @param jobId The id of the job. A random ID is generated, if {@code null} is passed.
 	 * @param jobName The name of the job.
-	 * @param config The execution configuration of the job.
 	 * @param vertices The vertices to add to the graph.
 	 */
-	public JobGraph(JobID jobId, String jobName, ExecutionConfig config, JobVertex... vertices) {
-		this(jobId, jobName, config);
+	public JobGraph(JobID jobId, String jobName, JobVertex... vertices) {
+		this(jobId, jobName);
 
 		for (JobVertex vertex : vertices) {
 			addVertex(vertex);
@@ -210,8 +209,8 @@ public class JobGraph implements Serializable {
 	 *
 	 * @return ExecutionConfig
 	 */
-	public ExecutionConfig getExecutionConfig() {
-		return executionConfig;
+	public SerializedValue<ExecutionConfig> getSerializedExecutionConfig() {
+		return serializedExecutionConfig;
 	}
 
 	/**
@@ -246,6 +245,35 @@ public class JobGraph implements Serializable {
 
 	public ScheduleMode getScheduleMode() {
 		return scheduleMode;
+	}
+
+	/**
+	 * Sets the savepoint restore settings.
+	 * @param settings The savepoint restore settings.
+	 */
+	public void setSavepointRestoreSettings(SavepointRestoreSettings settings) {
+		this.savepointRestoreSettings = checkNotNull(settings, "Savepoint restore settings");
+	}
+
+	/**
+	 * Returns the configured savepoint restore setting.
+	 * @return The configured savepoint restore settings.
+	 */
+	public SavepointRestoreSettings getSavepointRestoreSettings() {
+		return savepointRestoreSettings;
+	}
+
+	/**
+	 * Sets the execution config. This method eagerly serialized the ExecutionConfig for future RPC
+	 * transport. Further modification of the referenced ExecutionConfig object will not affect
+	 * this serialized copy.
+	 * 
+	 * @param executionConfig The ExecutionConfig to be serialized.
+	 * @throws IOException Thrown if the serialization of the ExecutionConfig fails
+	 */
+	public void setExecutionConfig(ExecutionConfig executionConfig) throws IOException {
+		checkNotNull(executionConfig, "ExecutionConfig must not be null.");
+		this.serializedExecutionConfig = new SerializedValue<>(executionConfig);
 	}
 
 	/**
@@ -299,17 +327,17 @@ public class JobGraph implements Serializable {
 	 *
 	 * @param settings The snapshot settings, or null, to disable snapshotting.
 	 */
-	public void setSnapshotSettings(JobSnapshottingSettings settings) {
+	public void setSnapshotSettings(JobCheckpointingSettings settings) {
 		this.snapshotSettings = settings;
 	}
 
 	/**
 	 * Gets the settings for asynchronous snapshots. This method returns null, when
-	 * snapshotting is not enabled.
+	 * checkpointing is not enabled.
 	 *
-	 * @return The snapshot settings, or null, if snapshotting is not enabled.
+	 * @return The snapshot settings, or null, if checkpointing is not enabled.
 	 */
-	public JobSnapshottingSettings getSnapshotSettings() {
+	public JobCheckpointingSettings getCheckpointingSettings() {
 		return snapshotSettings;
 	}
 
@@ -338,21 +366,20 @@ public class JobGraph implements Serializable {
 	}
 
 	/**
-	 * Sets the savepoint path to rollback the deployment to.
+	 * Gets the maximum parallelism of all operations in this job graph.
 	 *
-	 * @param savepointPath The savepoint path
+	 * @return The maximum parallelism of this job graph
 	 */
-	public void setSavepointPath(String savepointPath) {
-		if (savepointPath != null) {
-			if (snapshotSettings == null) {
-				throw new IllegalStateException("Checkpointing disabled");
-			}
-			else {
-				snapshotSettings.setSavepointPath(savepointPath);
-			}
+	public int getMaximumParallelism() {
+		int maxParallelism = -1;
+		for (JobVertex vertex : taskVertices.values()) {
+			maxParallelism = Math.max(vertex.getParallelism(), maxParallelism);
 		}
+		return maxParallelism;
 	}
 
+	// --------------------------------------------------------------------------------------------
+	//  Topological Graph Access
 	// --------------------------------------------------------------------------------------------
 
 	public List<JobVertex> getVerticesSortedTopologicallyFromSources() throws InvalidProgramException {
@@ -453,12 +480,21 @@ public class JobGraph implements Serializable {
 	}
 
 	/**
+	 * Gets the list of assigned user jar paths.
+	 *
+	 * @return The list of assigned user jar paths
+	 */
+	public List<Path> getUserJars() {
+		return userJars;
+	}
+
+	/**
 	 * Adds the BLOB referenced by the key to the JobGraph's dependencies.
 	 *
 	 * @param key
 	 *        path of the JAR file required to run the job on a task manager
 	 */
-	public void addBlob(BlobKey key) {
+	public void addBlob(PermanentBlobKey key) {
 		if (key == null) {
 			throw new IllegalArgumentException();
 		}
@@ -482,60 +518,32 @@ public class JobGraph implements Serializable {
 	 *
 	 * @return set of BLOB keys referring to the JAR files required to run this job
 	 */
-	public List<BlobKey> getUserJarBlobKeys() {
+	public List<PermanentBlobKey> getUserJarBlobKeys() {
 		return this.userJarBlobKeys;
 	}
 
 	/**
-	 * Uploads the previously added user jar file to the job manager through the job manager's BLOB server.
+	 * Uploads the previously added user JAR files to the job manager through
+	 * the job manager's BLOB server. The BLOB servers' address is given as a
+	 * parameter. This function issues a blocking call.
 	 *
-	 * @param serverAddress
-	 *        the network address of the BLOB server
-	 * @throws IOException
-	 *         thrown if an I/O error occurs during the upload
+	 * @param blobServerAddress of the blob server to upload the jars to
+	 * @param blobClientConfig the blob client configuration
+	 * @throws IOException Thrown, if the file upload to the JobManager failed.
 	 */
-	public void uploadRequiredJarFiles(InetSocketAddress serverAddress) throws IOException {
-		if (this.userJars.isEmpty()) {
-			return;
-		}
+	public void uploadUserJars(
+			InetSocketAddress blobServerAddress,
+			Configuration blobClientConfig) throws IOException {
+		if (!userJars.isEmpty()) {
+			List<PermanentBlobKey> blobKeys = BlobClient.uploadJarFiles(
+				blobServerAddress, blobClientConfig, jobID, userJars);
 
-		BlobClient bc = null;
-		try {
-			bc = new BlobClient(serverAddress);
-
-			for (final Path jar : this.userJars) {
-
-				final FileSystem fs = jar.getFileSystem();
-				FSDataInputStream is = null;
-				try {
-					is = fs.open(jar);
-					final BlobKey key = bc.put(is);
-					this.userJarBlobKeys.add(key);
-				}
-				finally {
-					if (is != null) {
-						is.close();
-					}
+			for (PermanentBlobKey blobKey : blobKeys) {
+				if (!userJarBlobKeys.contains(blobKey)) {
+					userJarBlobKeys.add(blobKey);
 				}
 			}
 		}
-		finally {
-			if (bc != null) {
-				bc.close();
-			}
-		}
-	}
-
-	/**
-	 * Gets the maximum parallelism of all operations in this job graph.
-	 * @return The maximum parallelism of this job graph
-	 */
-	public int getMaximumParallelism() {
-		int maxParallelism = -1;
-		for (JobVertex vertex : taskVertices.values()) {
-			maxParallelism = Math.max(vertex.getParallelism(), maxParallelism);
-		}
-		return maxParallelism;
 	}
 
 	@Override

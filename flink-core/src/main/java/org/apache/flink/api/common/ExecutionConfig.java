@@ -18,19 +18,22 @@
 
 package org.apache.flink.api.common;
 
-import com.esotericsoftware.kryo.Serializer;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.util.SerializedValue;
+import org.apache.flink.configuration.TaskManagerOptions;
 
+import com.esotericsoftware.kryo.Serializer;
 
-import java.io.IOException;
 import java.io.Serializable;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
  * A config to define the behavior of the program execution. It allows to define (among other
@@ -58,18 +61,28 @@ import java.util.Objects;
  * </ul>
  */
 @Public
-public class ExecutionConfig implements Serializable {
+public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecutionConfig> {
 
 	private static final long serialVersionUID = 1L;
 
-	// Key for storing it in the Job Configuration
-	public static final String CONFIG_KEY = "runtime.config";
-
 	/**
 	 * The constant to use for the parallelism, if the system should use the number
-	 *  of currently available slots.
+	 * of currently available slots.
 	 */
 	public static final int PARALLELISM_AUTO_MAX = Integer.MAX_VALUE;
+
+	/**
+	 * The flag value indicating use of the default parallelism. This value can
+	 * be used to reset the parallelism back to the default state.
+	 */
+	public static final int PARALLELISM_DEFAULT = -1;
+
+	/**
+	 * The flag value indicating an unknown or unset parallelism. This value is
+	 * not a valid parallelism and indicates that the parallelism should remain
+	 * unchanged.
+	 */
+	public static final int PARALLELISM_UNKNOWN = -2;
 
 	private static final long DEFAULT_RESTART_DELAY = 10000L;
 
@@ -80,7 +93,14 @@ public class ExecutionConfig implements Serializable {
 
 	private boolean useClosureCleaner = true;
 
-	private int parallelism = -1;
+	private int parallelism = PARALLELISM_DEFAULT;
+
+	/**
+	 * The program wide maximum parallelism used for operators which haven't specified a maximum
+	 * parallelism. The maximum parallelism specifies the upper limit for dynamic scaling and the
+	 * number of key groups used for partitioned state.
+	 */
+	private int maxParallelism = -1;
 
 	/**
 	 * @deprecated Should no longer be used because it is subsumed by RestartStrategyConfiguration
@@ -89,6 +109,9 @@ public class ExecutionConfig implements Serializable {
 	private int numberOfExecutionRetries = -1;
 
 	private boolean forceKryo = false;
+
+	/** Flag to indicate whether generic types (through Kryo) are supported */
+	private boolean disableGenericTypes = false;
 
 	private boolean objectReuse = false;
 
@@ -104,6 +127,11 @@ public class ExecutionConfig implements Serializable {
 	private long autoWatermarkInterval = 0;
 
 	/**
+	 * Interval in milliseconds for sending latency tracking marks from the sources to the sinks.
+	 */
+	private long latencyTrackingInterval = 2000L;
+
+	/**
 	 * @deprecated Should no longer be used because it is subsumed by RestartStrategyConfiguration
 	 */
 	@Deprecated
@@ -113,9 +141,21 @@ public class ExecutionConfig implements Serializable {
 	
 	private long taskCancellationIntervalMillis = -1;
 
+	/**
+	 * Timeout after which an ongoing task cancellation will lead to a fatal
+	 * TaskManager error, usually killing the JVM.
+	 */
+	private long taskCancellationTimeoutMillis = -1;
+
+	/** This flag defines if we use compression for the state snapshot data or not. Default: false */
+	private boolean useSnapshotCompression = false;
+
+	/** Determines if a task fails or not if there is an error in writing its checkpoint data. Default: true */
+	private boolean failTaskOnCheckpointError = true;
+
 	// ------------------------------- User code values --------------------------------------------
 
-	private transient GlobalJobParameters globalJobParameters;
+	private GlobalJobParameters globalJobParameters;
 
 	// Serializers and types registered with Kryo and the PojoSerializer
 	// we store them in linked maps/sets to ensure they are registered in order in all kryo instances.
@@ -131,22 +171,6 @@ public class ExecutionConfig implements Serializable {
 	private LinkedHashSet<Class<?>> registeredKryoTypes = new LinkedHashSet<>();
 
 	private LinkedHashSet<Class<?>> registeredPojoTypes = new LinkedHashSet<>();
-
-	// ----------------------- Helper values for serialized user objects ---------------------------
-
-	private SerializedValue<GlobalJobParameters> serializedGlobalJobParameters;
-
-	private SerializedValue<LinkedHashMap<Class<?>, SerializableSerializer<?>>> serializedRegisteredTypesWithKryoSerializers;
-
-	private SerializedValue<LinkedHashMap<Class<?>, Class<? extends Serializer<?>>>> serializedRegisteredTypesWithKryoSerializerClasses;
-
-	private SerializedValue<LinkedHashMap<Class<?>, SerializableSerializer<?>>> serializedDefaultKryoSerializers;
-
-	private SerializedValue<LinkedHashMap<Class<?>, Class<? extends Serializer<?>>>> serializedDefaultKryoSerializerClasses;
-
-	private SerializedValue<LinkedHashSet<Class<?>>> serializedRegisteredKryoTypes;
-
-	private SerializedValue<LinkedHashSet<Class<?>>> serializedRegisteredPojoTypes;
 
 	// --------------------------------------------------------------------------------------------
 
@@ -181,7 +205,7 @@ public class ExecutionConfig implements Serializable {
 	}
 
 	/**
-	 * Sets the interval of the automatic watermark emission. Watermaks are used throughout
+	 * Sets the interval of the automatic watermark emission. Watermarks are used throughout
 	 * the streaming system to keep track of the progress of time. They are used, for example,
 	 * for time based windowing.
 	 *
@@ -204,6 +228,40 @@ public class ExecutionConfig implements Serializable {
 	}
 
 	/**
+	 * Interval for sending latency tracking marks from the sources to the sinks.
+	 * Flink will send latency tracking marks from the sources at the specified interval.
+	 *
+	 * Recommended value: 2000 (2 seconds).
+	 *
+	 * Setting a tracking interval <= 0 disables the latency tracking.
+	 *
+	 * @param interval Interval in milliseconds.
+	 */
+	@PublicEvolving
+	public ExecutionConfig setLatencyTrackingInterval(long interval) {
+		this.latencyTrackingInterval = interval;
+		return this;
+	}
+
+	/**
+	 * Returns the latency tracking interval.
+	 * @return The latency tracking interval in milliseconds
+	 */
+	@PublicEvolving
+	public long getLatencyTrackingInterval() {
+		return latencyTrackingInterval;
+	}
+
+	/**
+	 * Returns if latency tracking is enabled
+	 * @return True, if the tracking is enabled, false otherwise.
+	 */
+	@PublicEvolving
+	public boolean isLatencyTrackingEnabled() {
+		return latencyTrackingInterval > 0;
+	}
+
+	/**
 	 * Gets the parallelism with which operation are executed by default. Operations can
 	 * individually override this value to use a specific parallelism.
 	 *
@@ -212,7 +270,8 @@ public class ExecutionConfig implements Serializable {
 	 * with a parallelism of one (the final reduce to the single result value).
 	 *
 	 * @return The parallelism used by operations, unless they override that value. This method
-	 *         returns {@code -1}, if the environment's default parallelism should be used.
+	 *         returns {@link #PARALLELISM_DEFAULT} if the environment's default parallelism
+	 *         should be used.
 	 */
 	public int getParallelism() {
 		return parallelism;
@@ -231,12 +290,41 @@ public class ExecutionConfig implements Serializable {
 	 * @param parallelism The parallelism to use
 	 */
 	public ExecutionConfig setParallelism(int parallelism) {
-		if (parallelism < 1 && parallelism != -1) {
-			throw new IllegalArgumentException(
-					"Parallelism must be at least one, or -1 (use system default).");
+		if (parallelism != PARALLELISM_UNKNOWN) {
+			if (parallelism < 1 && parallelism != PARALLELISM_DEFAULT) {
+				throw new IllegalArgumentException(
+					"Parallelism must be at least one, or ExecutionConfig.PARALLELISM_DEFAULT (use system default).");
+			}
+			this.parallelism = parallelism;
 		}
-		this.parallelism = parallelism;
 		return this;
+	}
+
+	/**
+	 * Gets the maximum degree of parallelism defined for the program.
+	 *
+	 * The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
+	 * defines the number of key groups used for partitioned state.
+	 *
+	 * @return Maximum degree of parallelism
+	 */
+	@PublicEvolving
+	public int getMaxParallelism() {
+		return maxParallelism;
+	}
+
+	/**
+	 * Sets the maximum degree of parallelism defined for the program.
+	 *
+	 * The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
+	 * defines the number of key groups used for partitioned state.
+	 *
+	 * @param maxParallelism Maximum degree of parallelism to be used for the program.
+	 */
+	@PublicEvolving
+	public void setMaxParallelism(int maxParallelism) {
+		checkArgument(maxParallelism > 0, "The maximum parallelism must be greater than 0.");
+		this.maxParallelism = maxParallelism;
 	}
 
 	/**
@@ -253,6 +341,36 @@ public class ExecutionConfig implements Serializable {
 	 */
 	public ExecutionConfig setTaskCancellationInterval(long interval) {
 		this.taskCancellationIntervalMillis = interval;
+		return this;
+	}
+
+	/**
+	 * Returns the timeout (in milliseconds) after which an ongoing task
+	 * cancellation leads to a fatal TaskManager error.
+	 *
+	 * <p>The value <code>0</code> means that the timeout is disabled. In
+	 * this case a stuck cancellation will not lead to a fatal error.
+	 */
+	@PublicEvolving
+	public long getTaskCancellationTimeout() {
+		return this.taskCancellationTimeoutMillis;
+	}
+
+	/**
+	 * Sets the timeout (in milliseconds) after which an ongoing task cancellation
+	 * is considered failed, leading to a fatal TaskManager error.
+	 *
+	 * <p>The cluster default is configured via {@link TaskManagerOptions#TASK_CANCELLATION_TIMEOUT}.
+	 *
+	 * <p>The value <code>0</code> disables the timeout. In this case a stuck
+	 * cancellation will not lead to a fatal error.
+	 *
+	 * @param timeout The task cancellation timeout (in milliseconds).
+	 */
+	@PublicEvolving
+	public ExecutionConfig setTaskCancellationTimeout(long timeout) {
+		checkArgument(timeout >= 0, "Timeout needs to be >= 0.");
+		this.taskCancellationTimeoutMillis = timeout;
 		return this;
 	}
 
@@ -280,6 +398,7 @@ public class ExecutionConfig implements Serializable {
 	 * @return The specified restart configuration
 	 */
 	@PublicEvolving
+	@SuppressWarnings("deprecation")
 	public RestartStrategies.RestartStrategyConfiguration getRestartStrategy() {
 		if (restartStrategyConfiguration == null) {
 			// support the old API calls by creating a restart strategy from them
@@ -410,16 +529,69 @@ public class ExecutionConfig implements Serializable {
 	}
 
 	/**
-	 * Force Flink to use the AvroSerializer for POJOs.
+	 * Enables the use generic types which are serialized via Kryo.
+	 * 
+	 * <p>Generic types are enabled by default.
+	 *
+	 * @see #disableGenericTypes()
+	 */
+	public void enableGenericTypes() {
+		disableGenericTypes = false;
+	}
+
+	/**
+	 * Disables the use of generic types (types that would be serialized via Kryo). If this option
+	 * is used, Flink will throw an {@code UnsupportedOperationException} whenever it encounters
+	 * a data type that would go through Kryo for serialization.
+	 *
+	 * <p>Disabling generic types can be helpful to eagerly find and eliminate teh use of types
+	 * that would go through Kryo serialization during runtime. Rather than checking types
+	 * individually, using this option will throw exceptions eagerly in the places where generic
+	 * types are used.
+	 * 
+	 * <p><b>Important:</b> We recommend to use this option only during development and pre-production
+	 * phases, not during actual production use. The application program and/or the input data may be
+	 * such that new, previously unseen, types occur at some point. In that case, setting this option
+	 * would cause the program to fail.
+	 * 
+	 * @see #enableGenericTypes()
+	 */
+	public void disableGenericTypes() {
+		disableGenericTypes = true;
+	}
+
+	/**
+	 * Checks whether generic types are supported. Generic types are types that go through Kryo during
+	 * serialization.
+	 * 
+	 * <p>Generic types are enabled by default.
+	 * 
+	 * @see #enableGenericTypes()
+	 * @see #disableGenericTypes()
+	 */
+	public boolean hasGenericTypesDisabled() {
+		return disableGenericTypes;
+	}
+
+	/**
+	 * Forces Flink to use the Apache Avro serializer for POJOs.
+	 *
+	 * <b>Important:</b> Make sure to include the <i>flink-avro</i> module.
 	 */
 	public void enableForceAvro() {
 		forceAvro = true;
 	}
 
+	/**
+	 * Disables the Apache Avro serializer as the forced serializer for POJOs.
+	 */
 	public void disableForceAvro() {
 		forceAvro = false;
 	}
 
+	/**
+	 * Returns whether the Apache Avro is the default serializer for POJOs.
+	 */
 	public boolean isForceAvroEnabled() {
 		return forceAvro;
 	}
@@ -570,11 +742,15 @@ public class ExecutionConfig implements Serializable {
 	 * @param type The class of the types serialized with the given serializer.
 	 * @param serializerClass The class of the serializer to use.
 	 */
-	public void registerTypeWithKryoSerializer(Class<?> type, Class<? extends Serializer<?>> serializerClass) {
+	@SuppressWarnings("rawtypes")
+	public void registerTypeWithKryoSerializer(Class<?> type, Class<? extends Serializer> serializerClass) {
 		if (type == null || serializerClass == null) {
 			throw new NullPointerException("Cannot register null class or serializer.");
 		}
-		registeredTypesWithKryoSerializerClasses.put(type, serializerClass);
+
+		@SuppressWarnings("unchecked")
+		Class<? extends Serializer<?>> castedSerializerClass = (Class<? extends Serializer<?>>) serializerClass;
+		registeredTypesWithKryoSerializerClasses.put(type, castedSerializerClass);
 	}
 
 	/**
@@ -589,7 +765,7 @@ public class ExecutionConfig implements Serializable {
 		if (type == null) {
 			throw new NullPointerException("Cannot register null type class.");
 		}
-		if(!registeredPojoTypes.contains(type)) {
+		if (!registeredPojoTypes.contains(type)) {
 			registeredPojoTypes.add(type);
 		}
 	}
@@ -679,77 +855,32 @@ public class ExecutionConfig implements Serializable {
 		this.autoTypeRegistrationEnabled = false;
 	}
 
-	/**
-	 * Deserializes user code objects given a user code class loader
-	 *
-	 * @param userCodeClassLoader User code class loader
-	 * @throws IOException Thrown if an IOException occurs while loading the classes
-	 * @throws ClassNotFoundException Thrown if the given class cannot be loaded
-	 */
-	public void deserializeUserCode(ClassLoader userCodeClassLoader) throws IOException, ClassNotFoundException {
-		if (serializedRegisteredKryoTypes != null) {
-			registeredKryoTypes = serializedRegisteredKryoTypes.deserializeValue(userCodeClassLoader);
-		} else {
-			registeredKryoTypes = new LinkedHashSet<>();
-		}
-
-		if (serializedRegisteredPojoTypes != null) {
-			registeredPojoTypes = serializedRegisteredPojoTypes.deserializeValue(userCodeClassLoader);
-		} else {
-			registeredPojoTypes = new LinkedHashSet<>();
-		}
-
-		if (serializedRegisteredTypesWithKryoSerializerClasses != null) {
-			registeredTypesWithKryoSerializerClasses = serializedRegisteredTypesWithKryoSerializerClasses.deserializeValue(userCodeClassLoader);
-		} else {
-			registeredTypesWithKryoSerializerClasses = new LinkedHashMap<>();
-		}
-
-		if (serializedRegisteredTypesWithKryoSerializers != null) {
-			registeredTypesWithKryoSerializers = serializedRegisteredTypesWithKryoSerializers.deserializeValue(userCodeClassLoader);
-		} else {
-			registeredTypesWithKryoSerializerClasses = new LinkedHashMap<>();
-		}
-
-		if (serializedDefaultKryoSerializers != null) {
-			defaultKryoSerializers = serializedDefaultKryoSerializers.deserializeValue(userCodeClassLoader);
-		} else {
-			defaultKryoSerializers = new LinkedHashMap<>();
-
-		}
-
-		if (serializedDefaultKryoSerializerClasses != null) {
-			defaultKryoSerializerClasses = serializedDefaultKryoSerializerClasses.deserializeValue(userCodeClassLoader);
-		} else {
-			defaultKryoSerializerClasses = new LinkedHashMap<>();
-		}
-
-		if (serializedGlobalJobParameters != null) {
-			globalJobParameters = serializedGlobalJobParameters.deserializeValue(userCodeClassLoader);
-		}
+	public boolean isUseSnapshotCompression() {
+		return useSnapshotCompression;
 	}
 
-	public void serializeUserCode() throws IOException {
-		serializedRegisteredKryoTypes = new SerializedValue<>(registeredKryoTypes);
-		registeredKryoTypes = null;
+	public void setUseSnapshotCompression(boolean useSnapshotCompression) {
+		this.useSnapshotCompression = useSnapshotCompression;
+	}
 
-		serializedRegisteredPojoTypes = new SerializedValue<>(registeredPojoTypes);
-		registeredPojoTypes = null;
+	/**
+	 * This method is visible because of the way the configuration is currently forwarded from the checkpoint config to
+	 * the task. This should not be called by the user, please use CheckpointConfig.isFailTaskOnCheckpointError()
+	 * instead.
+	 */
+	@Internal
+	public boolean isFailTaskOnCheckpointError() {
+		return failTaskOnCheckpointError;
+	}
 
-		serializedRegisteredTypesWithKryoSerializerClasses = new SerializedValue<>(registeredTypesWithKryoSerializerClasses);
-		registeredTypesWithKryoSerializerClasses = null;
-
-		serializedRegisteredTypesWithKryoSerializers = new SerializedValue<>(registeredTypesWithKryoSerializers);
-		registeredTypesWithKryoSerializers = null;
-
-		serializedDefaultKryoSerializers = new SerializedValue<>(defaultKryoSerializers);
-		defaultKryoSerializers = null;
-
-		serializedDefaultKryoSerializerClasses = new SerializedValue<>(defaultKryoSerializerClasses);
-		defaultKryoSerializerClasses = null;
-
-		serializedGlobalJobParameters = new SerializedValue<>(globalJobParameters);
-		globalJobParameters = null;
+	/**
+	 * This method is visible because of the way the configuration is currently forwarded from the checkpoint config to
+	 * the task. This should not be called by the user, please use CheckpointConfig.setFailOnCheckpointingErrors(...)
+	 * instead.
+	 */
+	@Internal
+	public void setFailTaskOnCheckpointError(boolean failTaskOnCheckpointError) {
+		this.failTaskOnCheckpointError = failTaskOnCheckpointError;
 	}
 
 	@Override
@@ -762,8 +893,9 @@ public class ExecutionConfig implements Serializable {
 				useClosureCleaner == other.useClosureCleaner &&
 				parallelism == other.parallelism &&
 				((restartStrategyConfiguration == null && other.restartStrategyConfiguration == null) ||
-				restartStrategyConfiguration.equals(other.restartStrategyConfiguration)) &&
+					(null != restartStrategyConfiguration && restartStrategyConfiguration.equals(other.restartStrategyConfiguration))) &&
 				forceKryo == other.forceKryo &&
+				disableGenericTypes == other.disableGenericTypes &&
 				objectReuse == other.objectReuse &&
 				autoTypeRegistrationEnabled == other.autoTypeRegistrationEnabled &&
 				forceAvro == other.forceAvro &&
@@ -775,7 +907,8 @@ public class ExecutionConfig implements Serializable {
 				defaultKryoSerializerClasses.equals(other.defaultKryoSerializerClasses) &&
 				registeredKryoTypes.equals(other.registeredKryoTypes) &&
 				registeredPojoTypes.equals(other.registeredPojoTypes) &&
-				taskCancellationIntervalMillis == other.taskCancellationIntervalMillis;
+				taskCancellationIntervalMillis == other.taskCancellationIntervalMillis &&
+				useSnapshotCompression == other.useSnapshotCompression;
 
 		} else {
 			return false;
@@ -790,6 +923,7 @@ public class ExecutionConfig implements Serializable {
 			parallelism,
 			restartStrategyConfiguration,
 			forceKryo,
+			disableGenericTypes,
 			objectReuse,
 			autoTypeRegistrationEnabled,
 			forceAvro,
@@ -801,11 +935,18 @@ public class ExecutionConfig implements Serializable {
 			defaultKryoSerializerClasses,
 			registeredKryoTypes,
 			registeredPojoTypes,
-			taskCancellationIntervalMillis);
+			taskCancellationIntervalMillis,
+			useSnapshotCompression);
 	}
 
 	public boolean canEqual(Object obj) {
 		return obj instanceof ExecutionConfig;
+	}
+	
+	@Override
+	@Internal
+	public ArchivedExecutionConfig archive() {
+		return new ArchivedExecutionConfig(this);
 	}
 
 
@@ -838,10 +979,10 @@ public class ExecutionConfig implements Serializable {
 		 * Convert UserConfig into a {@code Map<String, String>} representation.
 		 * This can be used by the runtime, for example for presenting the user config in the web frontend.
 		 *
-		 * @return Key/Value representation of the UserConfig, or null.
+		 * @return Key/Value representation of the UserConfig
 		 */
 		public Map<String, String> toMap() {
-			return null;
+			return Collections.emptyMap();
 		}
 	}
 }

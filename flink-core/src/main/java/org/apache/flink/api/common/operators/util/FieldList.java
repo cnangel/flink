@@ -16,15 +16,15 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.api.common.operators.util;
+
+import org.apache.flink.annotation.Internal;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import com.google.common.base.Preconditions;
-import org.apache.flink.annotation.Internal;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Immutable ordered list of fields IDs.
@@ -44,7 +44,7 @@ public class FieldList extends FieldSet {
 	}
 	
 	public FieldList(Integer fieldId) {
-		super(Collections.singletonList(Preconditions.checkNotNull(fieldId, "The fields ID must not be null.")));
+		super(Collections.singletonList(checkNotNull(fieldId, "The fields ID must not be null.")));
 	}
 	
 	public FieldList(int... columnIndexes) {
@@ -166,7 +166,7 @@ public class FieldList extends FieldSet {
 			return false;
 		} else {
 			for (int i = 0; i < this.size(); i++) {
-				if (this.get(i) != list.get(i)) {
+				if (!this.get(i).equals(list.get(i))) {
 					return false;
 				}
 			}

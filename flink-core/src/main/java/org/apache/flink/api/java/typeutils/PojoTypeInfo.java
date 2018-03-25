@@ -18,6 +18,19 @@
 
 package org.apache.flink.api.java.typeutils;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.operators.Keys.ExpressionKeys;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeutils.CompositeType;
+import org.apache.flink.api.common.typeutils.TypeComparator;
+import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.java.typeutils.runtime.PojoComparator;
+import org.apache.flink.api.java.typeutils.runtime.PojoSerializer;
+import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -27,22 +40,8 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.google.common.base.Preconditions;
-
-import org.apache.flink.annotation.PublicEvolving;
-import org.apache.flink.annotation.Public;
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.operators.Keys.ExpressionKeys;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeutils.CompositeType;
-import org.apache.flink.api.common.typeutils.TypeComparator;
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.typeutils.runtime.AvroSerializer;
-import org.apache.flink.api.java.typeutils.runtime.PojoComparator;
-import org.apache.flink.api.java.typeutils.runtime.PojoSerializer;
-
-import com.google.common.base.Joiner;
-import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * TypeInformation for "Java Beans"-style types. Flink refers to them as POJOs,
@@ -64,8 +63,8 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 	private final static String REGEX_FIELD = "[\\p{L}_\\$][\\p{L}\\p{Digit}_\\$]*";
 	private final static String REGEX_NESTED_FIELDS = "("+REGEX_FIELD+")(\\.(.+))?";
 	private final static String REGEX_NESTED_FIELDS_WILDCARD = REGEX_NESTED_FIELDS
-			+"|\\"+ExpressionKeys.SELECT_ALL_CHAR
-			+"|\\"+ExpressionKeys.SELECT_ALL_CHAR_SCALA;
+					+"|\\"+ExpressionKeys.SELECT_ALL_CHAR
+					+"|\\"+ExpressionKeys.SELECT_ALL_CHAR_SCALA;
 
 	private static final Pattern PATTERN_NESTED_FIELDS = Pattern.compile(REGEX_NESTED_FIELDS);
 	private static final Pattern PATTERN_NESTED_FIELDS_WILDCARD = Pattern.compile(REGEX_NESTED_FIELDS_WILDCARD);
@@ -78,8 +77,8 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 	public PojoTypeInfo(Class<T> typeClass, List<PojoField> fields) {
 		super(typeClass);
 
-		Preconditions.checkArgument(Modifier.isPublic(typeClass.getModifiers()),
-				"POJO " + typeClass + " is not public");
+		checkArgument(Modifier.isPublic(typeClass.getModifiers()),
+				"POJO %s is not public", typeClass);
 
 		this.fields = fields.toArray(new PojoField[fields.size()]);
 
@@ -264,11 +263,11 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 	}
 
 	@Override
+	@PublicEvolving
 	protected TypeComparatorBuilder<T> createTypeComparatorBuilder() {
 		return new PojoTypeComparatorBuilder();
 	}
 
-	// used for testing. Maybe use mockito here
 	@PublicEvolving
 	public PojoField getPojoFieldAt(int pos) {
 		if (pos < 0 || pos >= this.fields.length) {
@@ -299,15 +298,21 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 
 	@Override
 	@PublicEvolving
+	@SuppressWarnings("unchecked")
 	public TypeSerializer<T> createSerializer(ExecutionConfig config) {
-		if(config.isForceKryoEnabled()) {
-			return new KryoSerializer<T>(getTypeClass(), config);
-		}
-		if(config.isForceAvroEnabled()) {
-			return new AvroSerializer<T>(getTypeClass());
+		if (config.isForceKryoEnabled()) {
+			return new KryoSerializer<>(getTypeClass(), config);
 		}
 
-		TypeSerializer<?>[] fieldSerializers = new TypeSerializer<?>[fields.length ];
+		if (config.isForceAvroEnabled()) {
+			return AvroUtils.getAvroUtils().createAvroSerializer(getTypeClass());
+		}
+
+		return createPojoSerializer(config);
+	}
+
+	public PojoSerializer<T> createPojoSerializer(ExecutionConfig config) {
+		TypeSerializer<?>[] fieldSerializers = new TypeSerializer<?>[fields.length];
 		Field[] reflectiveFields = new Field[fields.length];
 
 		for (int i = 0; i < fields.length; i++) {
@@ -317,7 +322,7 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 
 		return new PojoSerializer<T>(getTypeClass(), fieldSerializers, reflectiveFields, config);
 	}
-	
+
 	@Override
 	public boolean equals(Object obj) {
 		if (obj instanceof PojoTypeInfo) {
@@ -350,7 +355,7 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 			fieldStrings.add(field.getField().getName() + ": " + field.getTypeInformation().toString());
 		}
 		return "PojoType<" + getTypeClass().getName()
-				+ ", fields = [" + Joiner.on(", ").join(fieldStrings) + "]"
+				+ ", fields = [" + StringUtils.join(fieldStrings, ", ") + "]"
 				+ ">";
 	}
 
@@ -381,15 +386,15 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 
 		@Override
 		public TypeComparator<T> createTypeComparator(ExecutionConfig config) {
-			Preconditions.checkState(
+			checkState(
 				keyFields.size() > 0,
 				"No keys were defined for the PojoTypeComparatorBuilder.");
 
-			Preconditions.checkState(
+			checkState(
 				fieldComparators.size() > 0,
 				"No type comparators were defined for the PojoTypeComparatorBuilder.");
 
-			Preconditions.checkState(
+			checkState(
 				keyFields.size() == fieldComparators.size(),
 				"Number of key fields and field comparators is not equal.");
 

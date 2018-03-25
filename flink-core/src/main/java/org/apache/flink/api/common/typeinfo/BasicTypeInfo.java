@@ -19,19 +19,24 @@
 package org.apache.flink.api.common.typeinfo;
 
 import java.lang.reflect.Constructor;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-import com.google.common.base.Preconditions;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.InvalidTypesException;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.base.BigDecComparator;
+import org.apache.flink.api.common.typeutils.base.BigDecSerializer;
+import org.apache.flink.api.common.typeutils.base.BigIntComparator;
+import org.apache.flink.api.common.typeutils.base.BigIntSerializer;
 import org.apache.flink.api.common.typeutils.base.BooleanComparator;
 import org.apache.flink.api.common.typeutils.base.BooleanSerializer;
 import org.apache.flink.api.common.typeutils.base.ByteComparator;
@@ -54,9 +59,11 @@ import org.apache.flink.api.common.typeutils.base.StringComparator;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.common.typeutils.base.VoidSerializer;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Type information for primitive types (int, long, double, byte, ...), String, Date, and Void.
+ * Type information for primitive types (int, long, double, byte, ...), String, Date, Void,
+ * BigInteger, and BigDecimal.
  */
 @Public
 public class BasicTypeInfo<T> extends TypeInformation<T> implements AtomicType<T> {
@@ -74,6 +81,8 @@ public class BasicTypeInfo<T> extends TypeInformation<T> implements AtomicType<T
 	public static final BasicTypeInfo<Character> CHAR_TYPE_INFO = new BasicTypeInfo<Character>(Character.class, new Class<?>[]{}, CharSerializer.INSTANCE, CharComparator.class);
 	public static final BasicTypeInfo<Date> DATE_TYPE_INFO = new BasicTypeInfo<Date>(Date.class, new Class<?>[]{}, DateSerializer.INSTANCE, DateComparator.class);
 	public static final BasicTypeInfo<Void> VOID_TYPE_INFO = new BasicTypeInfo<Void>(Void.class, new Class<?>[]{}, VoidSerializer.INSTANCE, null);
+	public static final BasicTypeInfo<BigInteger> BIG_INT_TYPE_INFO = new BasicTypeInfo<BigInteger>(BigInteger.class, new Class<?>[]{}, BigIntSerializer.INSTANCE, BigIntComparator.class);
+	public static final BasicTypeInfo<BigDecimal> BIG_DEC_TYPE_INFO = new BasicTypeInfo<BigDecimal>(BigDecimal.class, new Class<?>[]{}, BigDecSerializer.INSTANCE, BigDecComparator.class);
 
 	// --------------------------------------------------------------------------------------------
 
@@ -87,9 +96,9 @@ public class BasicTypeInfo<T> extends TypeInformation<T> implements AtomicType<T
 	
 	
 	protected BasicTypeInfo(Class<T> clazz, Class<?>[] possibleCastTargetTypes, TypeSerializer<T> serializer, Class<? extends TypeComparator<T>> comparatorClass) {
-		this.clazz = Preconditions.checkNotNull(clazz);
-		this.possibleCastTargetTypes = Preconditions.checkNotNull(possibleCastTargetTypes);
-		this.serializer = Preconditions.checkNotNull(serializer);
+		this.clazz = checkNotNull(clazz);
+		this.possibleCastTargetTypes = checkNotNull(possibleCastTargetTypes);
+		this.serializer = checkNotNull(serializer);
 		// comparator can be null as in VOID_TYPE_INFO
 		this.comparatorClass = comparatorClass;
 	}
@@ -240,5 +249,7 @@ public class BasicTypeInfo<T> extends TypeInformation<T> implements AtomicType<T
 		TYPES.put(Date.class, DATE_TYPE_INFO);
 		TYPES.put(Void.class, VOID_TYPE_INFO);
 		TYPES.put(void.class, VOID_TYPE_INFO);
+		TYPES.put(BigInteger.class, BIG_INT_TYPE_INFO);
+		TYPES.put(BigDecimal.class, BIG_DEC_TYPE_INFO);
 	}
 }

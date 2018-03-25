@@ -17,10 +17,10 @@
  */
 package org.apache.flink.api.scala.typeutils
 
-import org.apache.flink.annotation.{PublicEvolving, Public}
+import org.apache.flink.annotation.{Public, PublicEvolving, VisibleForTesting}
 import org.apache.flink.api.common.ExecutionConfig
-import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.common.typeutils.TypeSerializer
+import org.apache.flink.api.common.typeinfo.{AtomicType, TypeInformation}
+import org.apache.flink.api.common.typeutils.{TypeComparator, TypeSerializer}
 
 import scala.collection.JavaConverters._
 
@@ -29,14 +29,14 @@ import scala.collection.JavaConverters._
  */
 @Public
 class OptionTypeInfo[A, T <: Option[A]](private val elemTypeInfo: TypeInformation[A])
-  extends TypeInformation[T] {
+  extends TypeInformation[T] with AtomicType[T] {
 
   @PublicEvolving
   override def isBasicType: Boolean = false
   @PublicEvolving
   override def isTupleType: Boolean = false
   @PublicEvolving
-  override def isKeyType: Boolean = false
+  override def isKeyType: Boolean = elemTypeInfo.isKeyType
   @PublicEvolving
   override def getTotalFields: Int = 1
   @PublicEvolving
@@ -44,8 +44,18 @@ class OptionTypeInfo[A, T <: Option[A]](private val elemTypeInfo: TypeInformatio
   @PublicEvolving
   override def getTypeClass = classOf[Option[_]].asInstanceOf[Class[T]]
   @PublicEvolving
-  override def getGenericParameters = List[TypeInformation[_]](elemTypeInfo).asJava
+  override def getGenericParameters = Map[String, TypeInformation[_]]("A" -> elemTypeInfo).asJava
 
+  @PublicEvolving
+  override def createComparator(ascending: Boolean, executionConfig: ExecutionConfig) = {
+    if (isKeyType) {
+      val elemCompartor = elemTypeInfo.asInstanceOf[AtomicType[A]]
+        .createComparator(ascending, executionConfig)
+      new OptionTypeComparator[A](ascending, elemCompartor).asInstanceOf[TypeComparator[T]]
+    } else {
+      throw new UnsupportedOperationException("Element type that doesn't support ")
+    }
+  }
 
   @PublicEvolving
   def createSerializer(executionConfig: ExecutionConfig): TypeSerializer[T] = {
@@ -75,4 +85,7 @@ class OptionTypeInfo[A, T <: Option[A]](private val elemTypeInfo: TypeInformatio
   override def hashCode: Int = {
     elemTypeInfo.hashCode()
   }
+
+  @VisibleForTesting
+  def getElemTypeInfo: TypeInformation[A] = elemTypeInfo
 }

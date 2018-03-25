@@ -35,7 +35,7 @@ class FlinkILoop(
     val externalJars: Option[Array[String]],
     in0: Option[BufferedReader],
     out0: JPrintWriter)
-  extends ILoopCompat(in0, out0) {
+  extends ILoop(in0, out0) {
 
   def this(
     host: String,
@@ -71,8 +71,18 @@ class FlinkILoop(
     ScalaShellRemoteEnvironment.resetContextEnvironments()
     
     // create our environment that submits against the cluster (local or remote)
-    val remoteBenv = new ScalaShellRemoteEnvironment(host, port, this, clientConfig)
-    val remoteSenv = new ScalaShellRemoteStreamEnvironment(host, port, this);
+    val remoteBenv = new ScalaShellRemoteEnvironment(
+      host,
+      port,
+      this,
+      clientConfig,
+      this.getExternalJars(): _*)
+    val remoteSenv = new ScalaShellRemoteStreamEnvironment(
+      host,
+      port,
+      this,
+      clientConfig,
+      getExternalJars(): _*)
     // prevent further instantiation of environments
     ScalaShellRemoteEnvironment.disableAllContextAndOtherEnvironments()
     
@@ -135,15 +145,13 @@ class FlinkILoop(
   override def createInterpreter(): Unit = {
     super.createInterpreter()
 
-    addThunk {
-      intp.beQuietDuring {
-        // import dependencies
-        intp.interpret("import " + packageImports.mkString(", "))
+    intp.beQuietDuring {
+      // import dependencies
+      intp.interpret("import " + packageImports.mkString(", "))
 
-        // set execution environment
-        intp.bind("benv", this.scalaBenv)
-        intp.bind("senv", this.scalaSenv)
-      }
+      // set execution environment
+      intp.bind("benv", this.scalaBenv)
+      intp.bind("senv", this.scalaSenv)
     }
   }
 

@@ -18,8 +18,8 @@
 
 package org.apache.flink.api.common;
 
-import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 
 import java.util.Collections;
 import java.util.Map;
@@ -32,9 +32,9 @@ import java.util.concurrent.TimeUnit;
 @Public
 public class JobExecutionResult extends JobSubmissionResult {
 
-	private long netRuntime;
+	private final long netRuntime;
 
-	private Map<String, Object> accumulatorResults = Collections.emptyMap();
+	private final Map<String, Object> accumulatorResults;
 
 	/**
 	 * Creates a new JobExecutionResult.
@@ -49,6 +49,8 @@ public class JobExecutionResult extends JobSubmissionResult {
 
 		if (accumulators != null) {
 			this.accumulatorResults = accumulators;
+		} else {
+			this.accumulatorResults = Collections.emptyMap();
 		}
 	}
 
@@ -95,13 +97,14 @@ public class JobExecutionResult extends JobSubmissionResult {
 	public Map<String, Object> getAllAccumulatorResults() {
 		return this.accumulatorResults;
 	}
-	
+
 	/**
 	 * Gets the accumulator with the given name as an integer.
 	 *
 	 * @param accumulatorName Name of the counter
 	 * @return Result of the counter, or null if the counter does not exist
 	 * @throws java.lang.ClassCastException Thrown, if the accumulator was not aggregating a {@link java.lang.Integer}
+	 * @deprecated Will be removed in future versions. Use {@link #getAccumulatorResult} instead.
 	 */
 	@Deprecated
 	@PublicEvolving
@@ -118,10 +121,12 @@ public class JobExecutionResult extends JobSubmissionResult {
 	}
 
 	/**
-	 * Returns a dummy object for wrapping a JobSubmissionResult
+	 * Returns a dummy object for wrapping a JobSubmissionResult.
 	 * @param result The SubmissionResult
 	 * @return a JobExecutionResult
+	 * @deprecated Will be removed in future versions.
 	 */
+	@Deprecated
 	public static JobExecutionResult fromJobSubmissionResult(JobSubmissionResult result) {
 		return new JobExecutionResult(result.getJobID(), -1, null);
 	}

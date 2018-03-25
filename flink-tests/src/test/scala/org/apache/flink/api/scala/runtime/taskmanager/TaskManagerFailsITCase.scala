@@ -20,21 +20,19 @@ package org.apache.flink.api.scala.runtime.taskmanager
 
 import akka.actor.{ActorSystem, Kill, PoisonPill}
 import akka.testkit.{ImplicitSender, TestKit}
-import org.apache.flink.api.common.ExecutionConfig
-
 import org.apache.flink.configuration.ConfigConstants
 import org.apache.flink.configuration.Configuration
-import org.apache.flink.runtime.akka.{ListeningBehaviour, AkkaUtils}
+import org.apache.flink.runtime.akka.{AkkaUtils, ListeningBehaviour}
 import org.apache.flink.runtime.client.JobExecutionException
-import org.apache.flink.runtime.jobgraph.{JobVertex, DistributionPattern, JobGraph}
-import org.apache.flink.runtime.jobmanager.Tasks.{NoOpInvokable, BlockingNoOpInvokable, BlockingReceiver, Sender}
+import org.apache.flink.runtime.io.network.partition.ResultPartitionType
+import org.apache.flink.runtime.jobgraph.{DistributionPattern, JobGraph, JobVertex}
+import org.apache.flink.runtime.jobmanager.Tasks.{BlockingReceiver, Sender}
+import org.apache.flink.runtime.testtasks.{BlockingNoOpInvokable, NoOpInvokable}
 import org.apache.flink.runtime.messages.JobManagerMessages._
-import org.apache.flink.runtime.messages.TaskManagerMessages.{RegisteredAtJobManager, NotifyWhenRegisteredAtJobManager}
+import org.apache.flink.runtime.messages.TaskManagerMessages.{NotifyWhenRegisteredAtJobManager, RegisteredAtJobManager}
 import org.apache.flink.runtime.testingUtils.TestingJobManagerMessages._
 import org.apache.flink.runtime.testingUtils.TestingMessages.DisableDisconnect
-import org.apache.flink.runtime.testingUtils.{ScalaTestingUtils, TestingUtils}
-import org.apache.flink.test.util.ForkableFlinkMiniCluster
-
+import org.apache.flink.runtime.testingUtils.{ScalaTestingUtils, TestingCluster, TestingUtils}
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
@@ -97,12 +95,13 @@ class TaskManagerFailsITCase(_system: ActorSystem)
       receiver.setInvokableClass(classOf[BlockingReceiver])
       sender.setParallelism(num_tasks)
       receiver.setParallelism(num_tasks)
-      receiver.connectNewDataSetAsInput(sender, DistributionPattern.POINTWISE)
+      receiver.connectNewDataSetAsInput(sender, DistributionPattern.POINTWISE,
+        ResultPartitionType.PIPELINED)
 
-      val jobGraph = new JobGraph("Pointwise Job", new ExecutionConfig(), sender, receiver)
+      val jobGraph = new JobGraph("Pointwise Job", sender, receiver)
       val jobID = jobGraph.getJobID
 
-      val cluster = ForkableFlinkMiniCluster.startCluster(num_tasks, 2)
+      val cluster = TestingUtils.startTestingCluster(num_tasks, 2)
 
       val jmGateway = cluster.getLeaderGateway(TestingUtils.TESTING_DURATION)
 
@@ -149,12 +148,13 @@ class TaskManagerFailsITCase(_system: ActorSystem)
       receiver.setInvokableClass(classOf[BlockingReceiver])
       sender.setParallelism(num_tasks)
       receiver.setParallelism(num_tasks)
-      receiver.connectNewDataSetAsInput(sender, DistributionPattern.POINTWISE)
+      receiver.connectNewDataSetAsInput(sender, DistributionPattern.POINTWISE,
+        ResultPartitionType.PIPELINED)
 
-      val jobGraph = new JobGraph("Pointwise Job", new ExecutionConfig(), sender, receiver)
+      val jobGraph = new JobGraph("Pointwise Job", sender, receiver)
       val jobID = jobGraph.getJobID
 
-      val cluster = ForkableFlinkMiniCluster.startCluster(num_tasks, 2)
+      val cluster = TestingUtils.startTestingCluster(num_tasks, 2)
 
       val taskManagers = cluster.getTaskManagers
       val jmGateway = cluster.getLeaderGateway(TestingUtils.TESTING_DURATION)
@@ -190,12 +190,12 @@ class TaskManagerFailsITCase(_system: ActorSystem)
       val sender = new JobVertex("BlockingSender")
       sender.setParallelism(num_slots)
       sender.setInvokableClass(classOf[BlockingNoOpInvokable])
-      val jobGraph = new JobGraph("Blocking Testjob", new ExecutionConfig(), sender)
+      val jobGraph = new JobGraph("Blocking Testjob", sender)
 
       val noOp = new JobVertex("NoOpInvokable")
       noOp.setParallelism(num_slots)
       noOp.setInvokableClass(classOf[NoOpInvokable])
-      val jobGraph2 = new JobGraph("NoOp Testjob", new ExecutionConfig(), noOp)
+      val jobGraph2 = new JobGraph("NoOp Testjob", noOp)
 
       val cluster = createDeathwatchCluster(num_slots/2, 2)
 
@@ -226,7 +226,7 @@ class TaskManagerFailsITCase(_system: ActorSystem)
 
           tm ! NotifyWhenRegisteredAtJobManager
 
-          expectMsg(RegisteredAtJobManager)
+          expectMsgClass(classOf[RegisteredAtJobManager])
 
           jmGateway.tell(SubmitJob(jobGraph2, ListeningBehaviour.EXECUTION_RESULT), self)
 
@@ -241,11 +241,11 @@ class TaskManagerFailsITCase(_system: ActorSystem)
     }
   }
 
-  def createDeathwatchCluster(numSlots: Int, numTaskmanagers: Int): ForkableFlinkMiniCluster = {
+  def createDeathwatchCluster(numSlots: Int, numTaskmanagers: Int): TestingCluster = {
     val config = new Configuration()
     config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, numSlots)
     config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, numTaskmanagers)
 
-    new ForkableFlinkMiniCluster(config, singleActorSystem = false)
+    new TestingCluster(config, singleActorSystem = false)
   }
 }

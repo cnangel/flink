@@ -22,23 +22,27 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 
-import com.google.common.base.Preconditions;
-import com.google.common.primitives.Ints;
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.InvalidTypesException;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-//CHECKSTYLE.OFF: AvoidStarImport - Needed for TupleGenerator
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.tuple.*;
 import org.apache.flink.api.java.typeutils.runtime.Tuple0Serializer;
-//CHECKSTYLE.ON: AvoidStarImport
 import org.apache.flink.api.java.typeutils.runtime.TupleComparator;
 import org.apache.flink.api.java.typeutils.runtime.TupleSerializer;
 import org.apache.flink.types.Value;
+
+//CHECKSTYLE.OFF: AvoidStarImport - Needed for TupleGenerator
+import org.apache.flink.api.java.tuple.*;
+//CHECKSTYLE.ON: AvoidStarImport
+
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * A {@link TypeInformation} for the tuple types of the Java API.
@@ -62,7 +66,7 @@ public final class TupleTypeInfo<T extends Tuple> extends TupleTypeInfoBase<T> {
 	public TupleTypeInfo(Class<T> tupleType, TypeInformation<?>... types) {
 		super(tupleType, types);
 
-		Preconditions.checkArgument(
+		checkArgument(
 			types.length <= Tuple.MAX_ARITY,
 			"The tuple type exceeds the maximum supported arity.");
 
@@ -82,11 +86,12 @@ public final class TupleTypeInfo<T extends Tuple> extends TupleTypeInfoBase<T> {
 	@Override
 	@PublicEvolving
 	public int getFieldIndex(String fieldName) {
-		int fieldIndex = Integer.parseInt(fieldName.substring(1));
-		if (fieldIndex >= getArity()) {
-			return -1;
+		for (int i = 0; i < fieldNames.length; i++) {
+			if (fieldNames[i].equals(fieldName)) {
+				return i;
+			}
 		}
-		return fieldIndex;
+		return -1;
 	}
 
 	@SuppressWarnings("unchecked")
@@ -131,24 +136,24 @@ public final class TupleTypeInfo<T extends Tuple> extends TupleTypeInfoBase<T> {
 
 		@Override
 		public TypeComparator<T> createTypeComparator(ExecutionConfig config) {
-			Preconditions.checkState(
+			checkState(
 				fieldComparators.size() > 0,
 				"No field comparators were defined for the TupleTypeComparatorBuilder."
 			);
 
-			Preconditions.checkState(
+			checkState(
 				logicalKeyFields.size() > 0,
 				"No key fields were defined for the TupleTypeComparatorBuilder."
 			);
 
-			Preconditions.checkState(
+			checkState(
 				fieldComparators.size() == logicalKeyFields.size(),
 				"The number of field comparators and key fields is not equal."
 			);
 
 			final int maxKey = Collections.max(logicalKeyFields);
 
-			Preconditions.checkState(
+			checkState(
 				maxKey >= 0,
 				"The maximum key field must be greater or equal than 0."
 			);
@@ -160,13 +165,22 @@ public final class TupleTypeInfo<T extends Tuple> extends TupleTypeInfoBase<T> {
 			}
 
 			return new TupleComparator<T>(
-				Ints.toArray(logicalKeyFields),
+				listToPrimitives(logicalKeyFields),
 				fieldComparators.toArray(new TypeComparator[fieldComparators.size()]),
 				fieldSerializers
 			);
 		}
 	}
-	
+
+	@Override
+	public Map<String, TypeInformation<?>> getGenericParameters() {
+		Map<String, TypeInformation<?>> m = new HashMap<>(types.length);
+		for (int i = 0; i < types.length; i++) {
+			m.put("T" + i, types[i]);
+		}
+		return m;
+	}
+
 	// --------------------------------------------------------------------------------------------
 	
 	@Override
@@ -254,5 +268,13 @@ public final class TupleTypeInfo<T extends Tuple> extends TupleTypeInfoBase<T> {
 
 
 		return (TupleTypeInfo<X>) new TupleTypeInfo<>(infos);
+	}
+	
+	private static int[] listToPrimitives(ArrayList<Integer> ints) {
+		int[] result = new int[ints.size()];
+		for (int i = 0; i < result.length; i++) {
+			result[i] = ints.get(i);
+		}
+		return result;
 	}
 }

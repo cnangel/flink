@@ -18,7 +18,8 @@
 
 package org.apache.flink.runtime.leaderelection;
 
-import com.google.common.base.Preconditions;
+import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
+import org.apache.flink.util.Preconditions;
 
 import java.util.UUID;
 
@@ -42,7 +43,7 @@ public class StandaloneLeaderElectionService implements LeaderElectionService {
 		contender = Preconditions.checkNotNull(newContender);
 
 		// directly grant leadership to the given contender
-		contender.grantLeadership(null);
+		contender.grantLeadership(HighAvailabilityServices.DEFAULT_LEADER_ID);
 	}
 
 	@Override

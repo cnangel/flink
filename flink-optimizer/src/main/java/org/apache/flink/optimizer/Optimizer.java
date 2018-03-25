@@ -23,6 +23,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.optimizer.traversals.BinaryUnionReplacer;
 import org.apache.flink.optimizer.traversals.BranchesVisitor;
 import org.apache.flink.optimizer.traversals.GraphCreatingVisitor;
@@ -41,7 +42,6 @@ import org.apache.flink.optimizer.plan.PlanNode;
 import org.apache.flink.optimizer.plan.SinkJoinerPlanNode;
 import org.apache.flink.optimizer.plan.SinkPlanNode;
 import org.apache.flink.optimizer.postpass.OptimizerPostPass;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.optimizer.traversals.RangePartitionRewriter;
 import org.apache.flink.util.InstantiationUtil;
 
@@ -348,14 +348,14 @@ public class Optimizer {
 		this.costEstimator = estimator;
 
 		// determine the default parallelism
-		this.defaultParallelism = config.getInteger(
-				ConfigConstants.DEFAULT_PARALLELISM_KEY,
-				ConfigConstants.DEFAULT_PARALLELISM);
+		this.defaultParallelism = config.getInteger(CoreOptions.DEFAULT_PARALLELISM);
 
 		if (defaultParallelism < 1) {
-			LOG.warn("Config value " + defaultParallelism + " for option "
-					+ ConfigConstants.DEFAULT_PARALLELISM + " is invalid. Ignoring and using a value of 1.");
-			this.defaultParallelism = 1;
+			this.defaultParallelism = CoreOptions.DEFAULT_PARALLELISM.defaultValue();
+			LOG.warn("Config value {} for option {} is invalid. Ignoring and using a value of {}.",
+				defaultParallelism,
+				CoreOptions.DEFAULT_PARALLELISM.key(),
+				defaultParallelism);
 		}
 	}
 	
@@ -473,12 +473,12 @@ public class Optimizer {
 		}
 
 		// now that we have all nodes created and recorded which ones consume memory, tell the nodes their minimal
-		// guaranteed memory, for further cost estimations. we assume an equal distribution of memory among consumer tasks
+		// guaranteed memory, for further cost estimations. We assume an equal distribution of memory among consumer tasks
 		rootNode.accept(new IdAndEstimatesVisitor(this.statistics));
 
 		// We are dealing with operator DAGs, rather than operator trees.
 		// That requires us to deviate at some points from the classical DB optimizer algorithms.
-		// This step build some auxiliary structures to help track branches and joins in the DAG
+		// This step builds auxiliary structures to help track branches and joins in the DAG
 		BranchesVisitor branchingVisitor = new BranchesVisitor();
 		rootNode.accept(branchingVisitor);
 

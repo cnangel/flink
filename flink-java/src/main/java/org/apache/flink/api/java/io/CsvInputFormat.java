@@ -18,17 +18,22 @@
 
 package org.apache.flink.api.java.io;
 
-import com.google.common.base.Preconditions;
-import com.google.common.primitives.Ints;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.io.GenericCsvInputFormat;
 import org.apache.flink.core.fs.FileInputSplit;
-import org.apache.flink.types.parser.FieldParser;
-
-import java.io.IOException;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.types.parser.FieldParser;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import java.io.IOException;
+import java.util.Arrays;
+
+/**
+ * InputFormat that reads csv files.
+ *
+ * @param <OUT>
+ */
 @Internal
 public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 
@@ -39,7 +44,7 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 	public static final String DEFAULT_FIELD_DELIMITER = ",";
 
 	protected transient Object[] parsedValues;
-	
+
 	protected CsvInputFormat(Path filePath) {
 		super(filePath);
 	}
@@ -64,7 +69,7 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 
 		// left to right evaluation makes access [0] okay
 		// this marker is used to fasten up readRecord, so that it doesn't have to check each call if the line ending is set to default
-		if (this.getDelimiter().length == 1 && this.getDelimiter()[0] == '\n' ) {
+		if (this.getDelimiter().length == 1 && this.getDelimiter()[0] == '\n') {
 			this.lineDelimiterIsLinebreak = true;
 		}
 
@@ -87,8 +92,8 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 		/*
 		 * Fix to support windows line endings in CSVInputFiles with standard delimiter setup = \n
 		 */
-		//Find windows end line, so find carriage return before the newline
-		if (this.lineDelimiterIsLinebreak == true && numBytes > 0 && bytes[offset + numBytes - 1] == '\r') {
+		// Found window's end line, so find carriage return before the newline
+		if (this.lineDelimiterIsLinebreak && numBytes > 0 && bytes[offset + numBytes - 1] == '\r') {
 			//reduce the number of bytes so that the Carriage return is not taken as data
 			numBytes--;
 		}
@@ -124,7 +129,7 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 
 	protected static boolean[] createDefaultMask(int size) {
 		boolean[] includedMask = new boolean[size];
-		for (int x=0; x<includedMask.length; x++) {
+		for (int x = 0; x < includedMask.length; x++) {
 			includedMask[x] = true;
 		}
 		return includedMask;
@@ -133,13 +138,15 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 	protected static boolean[] toBooleanMask(int[] sourceFieldIndices) {
 		Preconditions.checkNotNull(sourceFieldIndices);
 
+		int max = 0;
 		for (int i : sourceFieldIndices) {
 			if (i < 0) {
 				throw new IllegalArgumentException("Field indices must not be smaller than zero.");
 			}
+			max = Math.max(i, max);
 		}
 
-		boolean[] includedMask = new boolean[Ints.max(sourceFieldIndices) + 1];
+		boolean[] includedMask = new boolean[max + 1];
 
 		// check if we support parsers for these types
 		for (int i = 0; i < sourceFieldIndices.length; i++) {
@@ -151,7 +158,7 @@ public abstract class CsvInputFormat<OUT> extends GenericCsvInputFormat<OUT> {
 
 	@Override
 	public String toString() {
-		return "CSV Input (" + StringUtils.showControlCharacters(String.valueOf(getFieldDelimiter())) + ") " + getFilePath();
+		return "CSV Input (" + StringUtils.showControlCharacters(String.valueOf(getFieldDelimiter())) + ") " + Arrays.toString(getFilePaths());
 	}
-	
+
 }

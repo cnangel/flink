@@ -20,11 +20,10 @@ package org.apache.flink.examples.scala.graph
 import java.lang.Iterable
 
 import org.apache.flink.api.common.functions.GroupReduceFunction
+import org.apache.flink.api.java.aggregation.Aggregations.SUM
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.api.scala._
 import org.apache.flink.examples.java.graph.util.PageRankData
-import org.apache.flink.api.java.aggregation.Aggregations.SUM
-
 import org.apache.flink.util.Collector
 
 import scala.collection.JavaConverters._
@@ -75,8 +74,6 @@ object PageRankBasic {
   def main(args: Array[String]) {
 
     val params: ParameterTool = ParameterTool.fromArgs(args)
-    println("Usage: PageRankBasic " +
-      "--pages <path> --links <path> --output <path> --numPages <n> --iterations <n>")
 
     // set up execution environment
     val env = ExecutionEnvironment.getExecutionEnvironment
@@ -183,5 +180,4 @@ object PageRankBasic {
       env.fromCollection(edges)
     }
   }
-
 }

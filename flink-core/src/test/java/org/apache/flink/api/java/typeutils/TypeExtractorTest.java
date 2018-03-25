@@ -18,9 +18,11 @@
 
 package org.apache.flink.api.java.typeutils;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.sql.Date;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -28,17 +30,21 @@ import java.util.List;
 import java.util.Map;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.InvalidTypesException;
+import org.apache.flink.api.common.functions.JoinFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichCoGroupFunction;
 import org.apache.flink.api.common.functions.RichCrossFunction;
 import org.apache.flink.api.common.functions.RichFlatJoinFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.functions.RichGroupReduceFunction;
+import org.apache.flink.api.common.functions.RichJoinFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
+import org.apache.flink.api.common.typeinfo.SqlTimeTypeInfo;
+import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType.FlatFieldDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -55,9 +61,8 @@ import org.apache.flink.types.DoubleValue;
 import org.apache.flink.types.IntValue;
 import org.apache.flink.types.StringValue;
 import org.apache.flink.types.Value;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
-
-import org.apache.hadoop.io.Writable;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -91,38 +96,6 @@ public class TypeExtractorTest {
 
 		// use getForObject()
 		Assert.assertEquals(BasicTypeInfo.BOOLEAN_TYPE_INFO, TypeExtractor.getForObject(true));
-	}
-	
-	public static class MyWritable implements Writable {
-		
-		@Override
-		public void write(DataOutput out) throws IOException {
-			
-		}
-		
-		@Override
-		public void readFields(DataInput in) throws IOException {
-		}
-		
-	}
-	
-	@SuppressWarnings({ "unchecked", "rawtypes" })
-	@Test
-	public void testWritableType() {
-		RichMapFunction<?, ?> function = new RichMapFunction<MyWritable, MyWritable>() {
-			private static final long serialVersionUID = 1L;
-			
-			@Override
-			public MyWritable map(MyWritable value) throws Exception {
-				return null;
-			}
-			
-		};
-		
-		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(function, (TypeInformation) new WritableTypeInfo<MyWritable>(MyWritable.class));
-		
-		Assert.assertTrue(ti instanceof WritableTypeInfo<?>);
-		Assert.assertEquals(MyWritable.class, ((WritableTypeInfo<?>) ti).getTypeClass());
 	}
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
@@ -373,8 +346,25 @@ public class TypeExtractorTest {
 
 		Assert.assertFalse(TypeExtractor.getForClass(PojoWithNonPublicDefaultCtor.class) instanceof PojoTypeInfo);
 	}
-	
 
+	@Test
+	public void testRow() {
+		Row row = new Row(2);
+		row.setField(0, "string");
+		row.setField(1, 15);
+		TypeInformation<Row> rowInfo = TypeExtractor.getForObject(row);
+		Assert.assertEquals(rowInfo.getClass(), RowTypeInfo.class);
+		Assert.assertEquals(2, rowInfo.getArity());
+		Assert.assertEquals(
+			new RowTypeInfo(
+				BasicTypeInfo.STRING_TYPE_INFO,
+				BasicTypeInfo.INT_TYPE_INFO),
+			rowInfo);
+
+		Row nullRow = new Row(2);
+		TypeInformation<Row> genericRowInfo = TypeExtractor.getForObject(nullRow);
+		Assert.assertEquals(genericRowInfo, new GenericTypeInfo<>(Row.class));
+	}
 	
 	public static class CustomType {
 		public String myField1;
@@ -1400,22 +1390,6 @@ public class TypeExtractorTest {
 		} catch (InvalidTypesException e) {
 			// right
 		}
-		
-		RichMapFunction<?, ?> function4 = new RichMapFunction<Writable, String>() {
-			private static final long serialVersionUID = 1L;
-
-			@Override
-			public String map(Writable value) throws Exception {
-				return null;
-			}
-		};
-		
-		try {
-			TypeExtractor.getMapReturnTypes(function4, (TypeInformation) new WritableTypeInfo<MyWritable>(MyWritable.class));
-			Assert.fail("exception expected");
-		} catch (InvalidTypesException e) {
-			// right
-		}
 	}
 	
 	public static class DummyFlatMapFunction<A,B,C,D> extends RichFlatMapFunction<Tuple2<A,B>, Tuple2<C,D>> {
@@ -1711,7 +1685,40 @@ public class TypeExtractorTest {
 		Assert.assertTrue(ti.isBasicType());
 		Assert.assertEquals(BasicTypeInfo.STRING_TYPE_INFO, ti);
 	}
-	
+
+	public static class CustomTuple2WithArray<K> extends Tuple2<K[], K> {
+
+		public CustomTuple2WithArray() {
+			// default constructor
+		}
+	}
+
+	public class JoinWithCustomTuple2WithArray<T> extends RichJoinFunction<CustomTuple2WithArray<T>, CustomTuple2WithArray<T>, CustomTuple2WithArray<T>> {
+
+		@Override
+		public CustomTuple2WithArray<T> join(CustomTuple2WithArray<T> first, CustomTuple2WithArray<T> second) throws Exception {
+			return null;
+		}
+	}
+
+	@Test
+	public void testInputInferenceWithCustomTupleAndRichFunction() {
+		JoinFunction<CustomTuple2WithArray<Long>, CustomTuple2WithArray<Long>, CustomTuple2WithArray<Long>> function = new JoinWithCustomTuple2WithArray<>();
+
+		TypeInformation<?> ti = TypeExtractor.getJoinReturnTypes(
+			function,
+			new TypeHint<CustomTuple2WithArray<Long>>(){}.getTypeInfo(),
+			new TypeHint<CustomTuple2WithArray<Long>>(){}.getTypeInfo());
+
+		Assert.assertTrue(ti.isTupleType());
+		TupleTypeInfo<?> tti = (TupleTypeInfo<?>) ti;
+		Assert.assertEquals(BasicTypeInfo.LONG_TYPE_INFO, tti.getTypeAt(1));
+
+		Assert.assertTrue(tti.getTypeAt(0) instanceof ObjectArrayTypeInfo<?, ?>);
+		ObjectArrayTypeInfo<?, ?> oati = (ObjectArrayTypeInfo<?, ?>) tti.getTypeAt(0);
+		Assert.assertEquals(BasicTypeInfo.LONG_TYPE_INFO, oati.getComponentInfo());
+	}
+
 	public static enum MyEnum {
 		ONE, TWO, THREE
 	}
@@ -2015,5 +2022,68 @@ public class TypeExtractorTest {
 
 		TypeExtractor.getMapReturnTypes(function,
 			(TypeInformation) new TupleTypeInfo<Tuple1<Object>>(customTypeInfo));
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
+	public void testBigBasicTypes() {
+		MapFunction<?, ?> function = new MapFunction<Tuple2<BigInteger, BigDecimal>, Tuple2<BigInteger, BigDecimal>>() {
+			@Override
+			public Tuple2<BigInteger, BigDecimal> map(Tuple2<BigInteger, BigDecimal> value) throws Exception {
+				return null;
+			}
+		};
+
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(
+			function,
+			(TypeInformation) TypeInformation.of(new TypeHint<Tuple2<BigInteger, BigDecimal>>() {
+		}));
+
+		Assert.assertTrue(ti.isTupleType());
+		TupleTypeInfo<?> tti = (TupleTypeInfo<?>) ti;
+		Assert.assertEquals(BasicTypeInfo.BIG_INT_TYPE_INFO, tti.getTypeAt(0));
+		Assert.assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, tti.getTypeAt(1));
+
+		// use getForClass()
+		Assert.assertTrue(TypeExtractor.getForClass(BigInteger.class).isBasicType());
+		Assert.assertTrue(TypeExtractor.getForClass(BigDecimal.class).isBasicType());
+		Assert.assertEquals(tti.getTypeAt(0), TypeExtractor.getForClass(BigInteger.class));
+		Assert.assertEquals(tti.getTypeAt(1), TypeExtractor.getForClass(BigDecimal.class));
+
+		// use getForObject()
+		Assert.assertEquals(BasicTypeInfo.BIG_INT_TYPE_INFO, TypeExtractor.getForObject(new BigInteger("42")));
+		Assert.assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, TypeExtractor.getForObject(new BigDecimal("42.42")));
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
+	public void testSqlTimeTypes() {
+		MapFunction<?, ?> function = new MapFunction<Tuple3<Date, Time, Timestamp>, Tuple3<Date, Time, Timestamp>>() {
+			@Override
+			public Tuple3<Date, Time, Timestamp> map(Tuple3<Date, Time, Timestamp> value) throws Exception {
+				return null;
+			}
+		};
+
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(
+			function,
+			(TypeInformation) TypeInformation.of(new TypeHint<Tuple3<Date, Time, Timestamp>>() {
+		}));
+
+		Assert.assertTrue(ti.isTupleType());
+		TupleTypeInfo<?> tti = (TupleTypeInfo<?>) ti;
+		Assert.assertEquals(SqlTimeTypeInfo.DATE, tti.getTypeAt(0));
+		Assert.assertEquals(SqlTimeTypeInfo.TIME, tti.getTypeAt(1));
+		Assert.assertEquals(SqlTimeTypeInfo.TIMESTAMP, tti.getTypeAt(2));
+
+		// use getForClass()
+		Assert.assertEquals(tti.getTypeAt(0), TypeExtractor.getForClass(Date.class));
+		Assert.assertEquals(tti.getTypeAt(1), TypeExtractor.getForClass(Time.class));
+		Assert.assertEquals(tti.getTypeAt(2), TypeExtractor.getForClass(Timestamp.class));
+
+		// use getForObject()
+		Assert.assertEquals(SqlTimeTypeInfo.DATE, TypeExtractor.getForObject(Date.valueOf("1998-12-12")));
+		Assert.assertEquals(SqlTimeTypeInfo.TIME, TypeExtractor.getForObject(Time.valueOf("12:37:45")));
+		Assert.assertEquals(SqlTimeTypeInfo.TIMESTAMP, TypeExtractor.getForObject(Timestamp.valueOf("1998-12-12 12:37:45")));
 	}
 }

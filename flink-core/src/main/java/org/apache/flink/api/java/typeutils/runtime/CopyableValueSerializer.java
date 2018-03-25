@@ -20,15 +20,20 @@ package org.apache.flink.api.java.typeutils.runtime;
 
 import java.io.IOException;
 
-import com.google.common.base.Preconditions;
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.typeutils.CompatibilityResult;
+import org.apache.flink.api.common.typeutils.GenericTypeSerializerConfigSnapshot;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.TypeSerializerConfigSnapshot;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.types.CopyableValue;
 import org.apache.flink.util.InstantiationUtil;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class CopyableValueSerializer<T extends CopyableValue<T>> extends TypeSerializer<T> {
+@Internal
+public final class CopyableValueSerializer<T extends CopyableValue<T>> extends TypeSerializer<T> {
 
 	private static final long serialVersionUID = 1L;
 	
@@ -39,7 +44,7 @@ public class CopyableValueSerializer<T extends CopyableValue<T>> extends TypeSer
 	
 	
 	public CopyableValueSerializer(Class<T> valueClass) {
-		this.valueClass = Preconditions.checkNotNull(valueClass);
+		this.valueClass = checkNotNull(valueClass);
 	}
 
 	@Override
@@ -125,5 +130,42 @@ public class CopyableValueSerializer<T extends CopyableValue<T>> extends TypeSer
 	@Override
 	public boolean canEqual(Object obj) {
 		return obj instanceof CopyableValueSerializer;
+	}
+
+	// --------------------------------------------------------------------------------------------
+	// Serializer configuration snapshotting & compatibility
+	// --------------------------------------------------------------------------------------------
+
+	@Override
+	public CopyableValueSerializerConfigSnapshot<T> snapshotConfiguration() {
+		return new CopyableValueSerializerConfigSnapshot<>(valueClass);
+	}
+
+	@Override
+	public CompatibilityResult<T> ensureCompatibility(TypeSerializerConfigSnapshot configSnapshot) {
+		if (configSnapshot instanceof CopyableValueSerializerConfigSnapshot
+				&& valueClass.equals(((CopyableValueSerializerConfigSnapshot) configSnapshot).getTypeClass())) {
+			return CompatibilityResult.compatible();
+		} else {
+			return CompatibilityResult.requiresMigration();
+		}
+	}
+
+	public static final class CopyableValueSerializerConfigSnapshot<T extends CopyableValue<T>>
+			extends GenericTypeSerializerConfigSnapshot<T> {
+
+		private static final int VERSION = 1;
+
+		/** This empty nullary constructor is required for deserializing the configuration. */
+		public CopyableValueSerializerConfigSnapshot() {}
+
+		public CopyableValueSerializerConfigSnapshot(Class<T> copyableValueClass) {
+			super(copyableValueClass);
+		}
+
+		@Override
+		public int getVersion() {
+			return VERSION;
+		}
 	}
 }

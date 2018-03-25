@@ -18,96 +18,146 @@
 
 package org.apache.flink.runtime.taskmanager;
 
-import static org.junit.Assert.*;
-
-import org.apache.commons.io.FileUtils;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.IllegalConfigurationException;
+import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
+import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedHaServices;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
+import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.runtime.util.StartupUtils;
+import org.apache.flink.util.NetUtils;
+import org.apache.flink.util.TestLogger;
+
+import akka.actor.ActorSystem;
+import org.apache.commons.io.FileUtils;
+import org.junit.After;
+import org.junit.Assume;
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.BindException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.util.UUID;
+import java.util.ArrayList;
+import java.util.List;
+
+import scala.Option;
+
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
- * Tests that check how the TaskManager behaves when encountering startup problems.
+ * Tests that check how the TaskManager behaves when encountering startup
+ * problems.
  */
-public class TaskManagerStartupTest {
+public class TaskManagerStartupTest extends TestLogger {
+	@Rule
+	public TemporaryFolder tempFolder = new TemporaryFolder();
+
+	private HighAvailabilityServices highAvailabilityServices;
+
+	@Before
+	public void setupTest() {
+		highAvailabilityServices = new EmbeddedHaServices(TestingUtils.defaultExecutor());
+	}
+
+	@After
+	public void tearDownTest() throws Exception {
+		if (highAvailabilityServices != null) {
+			highAvailabilityServices.closeAndCleanupAllData();
+			highAvailabilityServices = null;
+		}
+	}
+	
 
 	/**
 	 * Tests that the TaskManager fails synchronously when the actor system port
 	 * is in use.
+	 * 
+	 * @throws Throwable
 	 */
-	@Test
-	public void testStartupWhenTaskmanagerActorPortIsUsed() {
+	@Test(expected = BindException.class)
+	public void testStartupWhenTaskmanagerActorPortIsUsed() throws Exception {
 		ServerSocket blocker = null;
+
 		try {
 			final String localHostName = "localhost";
-			final InetAddress localAddress = InetAddress.getByName(localHostName);
+			final InetAddress localBindAddress = InetAddress.getByName(NetUtils.getWildcardIPAddress());
 
 			// block some port
-			blocker = new ServerSocket(0, 50, localAddress);
+			blocker = new ServerSocket(0, 50, localBindAddress);
 			final int port = blocker.getLocalPort();
 
-			try {
-				TaskManager.runTaskManager(
-					localHostName,
-					ResourceID.generate(),
-					port,
-					new Configuration(),
-					TaskManager.class);
-				fail("This should fail with an IOException");
-			}
-			catch (IOException e) {
-				// expected. validate the error message
-				assertNotNull(e.getMessage());
-				assertTrue(e.getMessage().contains("Address already in use"));
-			}
+			TaskManager.runTaskManager(
+				localHostName,
+				ResourceID.generate(),
+				port,
+				new Configuration(),
+				highAvailabilityServices,
+				TaskManager.class);
+			fail("This should fail with an IOException");
 
 		}
 		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
+			// expected. validate the error message
+			List<Throwable> causes = StartupUtils.getExceptionCauses(e, new ArrayList<Throwable>());
+			for (Throwable cause : causes) {
+				if (cause instanceof BindException) {
+					throw (BindException) cause;
+				}
+			}
+
+			fail("This should fail with an exception caused by BindException");
 		}
 		finally {
 			if (blocker != null) {
 				try {
 					blocker.close();
-				}
-				catch (IOException e) {
+				} catch (IOException e) {
 					// no need to log here
 				}
 			}
+
+			highAvailabilityServices.closeAndCleanupAllData();
 		}
 	}
 
+
+
 	/**
-	 * Tests that the TaskManager startup fails synchronously when the I/O directories are
-	 * not writable.
+	 * Tests that the TaskManager startup fails synchronously when the I/O
+	 * directories are not writable.
 	 */
 	@Test
-	public void testIODirectoryNotWritable() {
-		File tempDir = new File(ConfigConstants.DEFAULT_TASK_MANAGER_TMP_PATH);
-		File nonWritable = new File(tempDir, UUID.randomUUID().toString());
-
-		if (!nonWritable.mkdirs() || !nonWritable.setWritable(false, false)) {
-			System.err.println("Cannot create non-writable temporary file directory. Skipping test.");
-			return;
-		}
+	public void testIODirectoryNotWritable() throws Exception {
+		File nonWritable = tempFolder.newFolder();
+		Assume.assumeTrue("Cannot create non-writable temporary file directory. Skipping test.",
+			nonWritable.setWritable(false, false));
 
 		try {
 			Configuration cfg = new Configuration();
-			cfg.setString(ConfigConstants.TASK_MANAGER_TMP_DIR_KEY, nonWritable.getAbsolutePath());
-			cfg.setInteger(ConfigConstants.TASK_MANAGER_MEMORY_SIZE_KEY, 4);
-			cfg.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
-			cfg.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 21656);
+			cfg.setString(CoreOptions.TMP_DIRS, nonWritable.getAbsolutePath());
+			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 4L);
+			cfg.setString(JobManagerOptions.ADDRESS, "localhost");
+			cfg.setInteger(JobManagerOptions.PORT, 21656);
 
 			try {
-				TaskManager.runTaskManager("localhost", ResourceID.generate(), 0, cfg);
+				TaskManager.runTaskManager(
+					"localhost",
+					ResourceID.generate(),
+					0,
+					cfg,
+					highAvailabilityServices);
 				fail("Should fail synchronously with an exception");
 			}
 			catch (IOException e) {
@@ -119,7 +169,7 @@ public class TaskManagerStartupTest {
 			fail(e.getMessage());
 		}
 		finally {
-			//noinspection ResultOfMethodCallIgnored
+			// noinspection ResultOfMethodCallIgnored
 			nonWritable.setWritable(true, false);
 			try {
 				FileUtils.deleteDirectory(nonWritable);
@@ -127,6 +177,8 @@ public class TaskManagerStartupTest {
 			catch (IOException e) {
 				// best effort
 			}
+
+			highAvailabilityServices.closeAndCleanupAllData();
 		}
 	}
 
@@ -138,14 +190,19 @@ public class TaskManagerStartupTest {
 	public void testMemoryConfigWrong() {
 		try {
 			Configuration cfg = new Configuration();
-			cfg.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
-			cfg.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 21656);
-			cfg.setString(ConfigConstants.TASK_MANAGER_MEMORY_PRE_ALLOCATE_KEY, "true");
+			cfg.setString(JobManagerOptions.ADDRESS, "localhost");
+			cfg.setInteger(JobManagerOptions.PORT, 21656);
+			cfg.setBoolean(TaskManagerOptions.MANAGED_MEMORY_PRE_ALLOCATE, true);
 
 			// something invalid
-			cfg.setInteger(ConfigConstants.TASK_MANAGER_MEMORY_SIZE_KEY, -42);
+			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, -42L);
 			try {
-				TaskManager.runTaskManager("localhost", ResourceID.generate(), 0, cfg);
+				TaskManager.runTaskManager(
+					"localhost",
+					ResourceID.generate(),
+					0,
+					cfg,
+					highAvailabilityServices);
 				fail("Should fail synchronously with an exception");
 			}
 			catch (IllegalConfigurationException e) {
@@ -154,20 +211,65 @@ public class TaskManagerStartupTest {
 
 			// something ridiculously high
 			final long memSize = (((long) Integer.MAX_VALUE - 1) *
-									ConfigConstants.DEFAULT_TASK_MANAGER_MEMORY_SEGMENT_SIZE) >> 20;
-			cfg.setLong(ConfigConstants.TASK_MANAGER_MEMORY_SIZE_KEY, memSize);
+					TaskManagerOptions.MEMORY_SEGMENT_SIZE.defaultValue()) >> 20;
+			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, memSize);
 			try {
-				TaskManager.runTaskManager("localhost", ResourceID.generate(), 0, cfg);
+				TaskManager.runTaskManager(
+					"localhost",
+					ResourceID.generate(),
+					0,
+					cfg,
+					highAvailabilityServices);
 				fail("Should fail synchronously with an exception");
 			}
 			catch (Exception e) {
 				// splendid!
 				assertTrue(e.getCause() instanceof OutOfMemoryError);
 			}
-		}
-		catch (Exception e) {
+		} 
+		catch(Exception e) {
 			e.printStackTrace();
 			fail(e.getMessage());
+		}
+	}
+
+	/**
+	 * Tests that the task manager start-up fails if the network stack cannot be initialized.
+	 * @throws Exception
+	 */
+	@Test(expected = IOException.class)
+	public void testStartupWhenNetworkStackFailsToInitialize() throws Exception {
+
+		ServerSocket blocker = null;
+
+		try {
+			blocker = new ServerSocket(0, 50, InetAddress.getByName("localhost"));
+
+			final Configuration cfg = new Configuration();
+			cfg.setString(ConfigConstants.TASK_MANAGER_HOSTNAME_KEY, "localhost");
+			cfg.setInteger(TaskManagerOptions.DATA_PORT, blocker.getLocalPort());
+			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 1L);
+			ActorSystem actorSystem = AkkaUtils.createLocalActorSystem(cfg);
+			TaskManager.startTaskManagerComponentsAndActor(
+				cfg,
+				ResourceID.generate(),
+				actorSystem,
+				highAvailabilityServices,
+				NoOpMetricRegistry.INSTANCE,
+				"localhost",
+				Option.<String>empty(),
+				false,
+				TaskManager.class);
+		}
+		finally {
+			if (blocker != null) {
+				try {
+					blocker.close();
+				}
+				catch (IOException e) {
+					// ignore, best effort
+				}
+			}
 		}
 	}
 }

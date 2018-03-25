@@ -23,7 +23,7 @@ import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.runtime.io.network.api.writer.ChannelSelector;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.runtime.util.MathUtils;
+import org.apache.flink.util.MathUtils;
 
 /**
  * The output emitter decides to which of the possibly multiple output channels a record is sent.
@@ -258,11 +258,11 @@ public class OutputEmitter<T> implements ChannelSelector<SerializationDelegate<T
 	private final int compareRecordAndBoundary(T record, Object[] boundary) {
 		this.comparator.extractKeys(record, keys, 0);
 
-		if (flatComparators.length != keys.length || flatComparators.length != boundary.length) {
+		if (flatComparators.length != keys.length || flatComparators.length > boundary.length) {
 			throw new RuntimeException("Can not compare keys with boundary due to mismatched length.");
 		}
 
-		for (int i=0; i<flatComparators.length; i++) {
+		for (int i = 0; i < flatComparators.length; i++) {
 			int result = flatComparators[i].compare(keys[i], boundary[i]);
 			if (result != 0) {
 				return result;

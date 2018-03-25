@@ -20,10 +20,10 @@ package org.apache.flink.streaming.api.scala
 
 import org.apache.flink.api.common.functions.{RichMapFunction, FoldFunction}
 import org.apache.flink.core.fs.FileSystem
-import org.apache.flink.runtime.util.MathUtils
 import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
 import org.apache.flink.test.util.TestBaseUtils
+import org.apache.flink.util.MathUtils
 import org.junit.rules.TemporaryFolder
 import org.junit.{After, Before, Rule, Test}
 
@@ -58,8 +58,8 @@ class StreamingOperatorsITCase extends ScalaStreamingMultipleProgramsTestBase {
     * The stream is grouped by the first field. For each group, the resulting stream is folded by
     * summing up the second tuple field.
     *
-    * This test relies on the hash function used by the {@link DataStream#keyBy}, which is
-    * assumed to be {@link MathUtils#murmurHash}.
+    * This test relies on the hash function used by the [[DataStream#keyBy]], which is
+    * assumed to be [[MathUtils#murmurHash]].
     */
   @Test
   def testGroupedFoldOperator(): Unit = {
@@ -69,6 +69,7 @@ class StreamingOperatorsITCase extends ScalaStreamingMultipleProgramsTestBase {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
 
     env.setParallelism(2)
+    env.getConfig.setMaxParallelism(2)
 
     val sourceStream = env.addSource(new SourceFunction[(Int, Int)] {
 

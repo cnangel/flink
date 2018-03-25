@@ -17,22 +17,17 @@
 
 package org.apache.flink.storm.wrappers;
 
-import backtype.storm.task.OutputCollector;
-import backtype.storm.task.TopologyContext;
-import backtype.storm.topology.IRichBolt;
-import backtype.storm.topology.OutputFieldsDeclarer;
-import backtype.storm.tuple.Fields;
-import backtype.storm.tuple.MessageId;
-import backtype.storm.tuple.Values;
-import backtype.storm.utils.Utils;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
+import org.apache.flink.core.fs.CloseableRegistry;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.execution.Environment;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.storm.util.AbstractTest;
 import org.apache.flink.storm.util.SplitStreamType;
 import org.apache.flink.storm.util.StormConfig;
@@ -40,13 +35,23 @@ import org.apache.flink.storm.util.TestDummyBolt;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecordSerializer;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
+
+import org.apache.storm.task.OutputCollector;
+import org.apache.storm.task.TopologyContext;
+import org.apache.storm.topology.IRichBolt;
+import org.apache.storm.topology.OutputFieldsDeclarer;
+import org.apache.storm.tuple.Fields;
+import org.apache.storm.tuple.MessageId;
+import org.apache.storm.tuple.Values;
+import org.apache.storm.utils.Utils;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PowerMockIgnore;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
@@ -63,8 +68,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Tests for the BoltWrapper.
+ */
 @RunWith(PowerMockRunner.class)
-@PrepareForTest({StreamRecordSerializer.class, WrapperSetupHelper.class, StreamRecord.class})
+@PrepareForTest({StreamElementSerializer.class, WrapperSetupHelper.class, StreamRecord.class})
+@PowerMockIgnore({"javax.management.*", "com.sun.jndi.*", "org.apache.log4j.*"})
 public class BoltWrapperTest extends AbstractTest {
 
 	@Test(expected = IllegalArgumentException.class)
@@ -141,6 +150,7 @@ public class BoltWrapperTest extends AbstractTest {
 		final StreamingRuntimeContext taskContext = mock(StreamingRuntimeContext.class);
 		when(taskContext.getExecutionConfig()).thenReturn(mock(ExecutionConfig.class));
 		when(taskContext.getTaskName()).thenReturn("name");
+		when(taskContext.getMetricGroup()).thenReturn(new UnregisteredMetricsGroup());
 
 		final IRichBolt bolt = mock(IRichBolt.class);
 
@@ -225,6 +235,7 @@ public class BoltWrapperTest extends AbstractTest {
 		final StreamingRuntimeContext taskContext = mock(StreamingRuntimeContext.class);
 		when(taskContext.getExecutionConfig()).thenReturn(taskConfig);
 		when(taskContext.getTaskName()).thenReturn("name");
+		when(taskContext.getMetricGroup()).thenReturn(new UnregisteredMetricsGroup());
 
 		final SetupOutputFieldsDeclarer declarer = new SetupOutputFieldsDeclarer();
 		declarer.declare(new Fields("dummy"));
@@ -289,6 +300,7 @@ public class BoltWrapperTest extends AbstractTest {
 		final StreamingRuntimeContext taskContext = mock(StreamingRuntimeContext.class);
 		when(taskContext.getExecutionConfig()).thenReturn(taskConfig);
 		when(taskContext.getTaskName()).thenReturn("name");
+		when(taskContext.getMetricGroup()).thenReturn(new UnregisteredMetricsGroup());
 
 		final IRichBolt bolt = mock(IRichBolt.class);
 		BoltWrapper<Object, Object> wrapper = new BoltWrapper<Object, Object>(bolt);
@@ -320,7 +332,7 @@ public class BoltWrapperTest extends AbstractTest {
 
 	private static final class TestBolt implements IRichBolt {
 		private static final long serialVersionUID = 7278692872260138758L;
-		private OutputCollector collector;
+		private transient OutputCollector collector;
 
 		@SuppressWarnings("rawtypes")
 		@Override
@@ -330,7 +342,7 @@ public class BoltWrapperTest extends AbstractTest {
 
 		int counter = 0;
 		@Override
-		public void execute(backtype.storm.tuple.Tuple input) {
+		public void execute(org.apache.storm.tuple.Tuple input) {
 			if (++counter % 2 == 1) {
 				this.collector.emit("stream1", new Values(input.getInteger(0)));
 			} else {
@@ -359,14 +371,18 @@ public class BoltWrapperTest extends AbstractTest {
 
 	public static StreamTask<?, ?> createMockStreamTask(ExecutionConfig execConfig) {
 		Environment env = mock(Environment.class);
-		when(env.getTaskInfo()).thenReturn(new TaskInfo("Mock Task", 0, 1, 0));
+		when(env.getTaskInfo()).thenReturn(new TaskInfo("Mock Task", 1, 0, 1, 0));
 		when(env.getUserClassLoader()).thenReturn(BoltWrapperTest.class.getClassLoader());
+		when(env.getMetricGroup()).thenReturn(UnregisteredMetricGroups.createUnregisteredTaskMetricGroup());
+		when(env.getTaskManagerInfo()).thenReturn(new TestingTaskManagerRuntimeInfo());
 
+		final CloseableRegistry closeableRegistry = new CloseableRegistry();
 		StreamTask<?, ?> mockTask = mock(StreamTask.class);
 		when(mockTask.getCheckpointLock()).thenReturn(new Object());
 		when(mockTask.getConfiguration()).thenReturn(new StreamConfig(new Configuration()));
 		when(mockTask.getEnvironment()).thenReturn(env);
 		when(mockTask.getExecutionConfig()).thenReturn(execConfig);
+		when(mockTask.getCancelables()).thenReturn(closeableRegistry);
 
 		return mockTask;
 	}

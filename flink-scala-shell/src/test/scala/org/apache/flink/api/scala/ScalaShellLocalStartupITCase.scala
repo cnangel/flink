@@ -20,11 +20,18 @@ package org.apache.flink.api.scala
 
 import java.io._
 
+import org.apache.flink.configuration.{Configuration, CoreOptions}
+import org.apache.flink.runtime.clusterframework.BootstrapTools
 import org.apache.flink.util.TestLogger
-import org.junit.Test
-import org.junit.Assert
+import org.junit.{Assert, Rule, Test}
+import org.junit.rules.TemporaryFolder
 
 class ScalaShellLocalStartupITCase extends TestLogger {
+
+  val _temporaryFolder = new TemporaryFolder
+
+  @Rule
+  def temporaryFolder = _temporaryFolder
 
   /**
    * tests flink shell with local setup through startup script in bin folder
@@ -71,12 +78,19 @@ class ScalaShellLocalStartupITCase extends TestLogger {
         |
         |:q
       """.stripMargin
-      val in: BufferedReader = new BufferedReader(new StringReader(input + "\n"))
-      val out: StringWriter = new StringWriter
-      val baos: ByteArrayOutputStream = new ByteArrayOutputStream
-      val oldOut: PrintStream = System.out
-      System.setOut(new PrintStream(baos))
-      val args: Array[String] = Array("local")
+    val in: BufferedReader = new BufferedReader(new StringReader(input + "\n"))
+    val out: StringWriter = new StringWriter
+    val baos: ByteArrayOutputStream = new ByteArrayOutputStream
+    val oldOut: PrintStream = System.out
+    System.setOut(new PrintStream(baos))
+
+    val configuration = new Configuration()
+    configuration.setString(CoreOptions.MODE, CoreOptions.OLD_MODE)
+
+    val dir = temporaryFolder.newFolder()
+    BootstrapTools.writeConfiguration(configuration, new File(dir, "flink-conf.yaml"))
+
+    val args: Array[String] = Array("local", "--configDir", dir.getAbsolutePath)
 
     //start flink scala shell
     FlinkShell.bufferedReader = Some(in);

@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 
 import org.apache.flink.api.common.functions.MapFunction;
@@ -32,12 +33,10 @@ import org.apache.flink.api.common.typeutils.CompositeType.FlatFieldDescriptor;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.api.java.typeutils.TypeInfoParserTest.MyWritable;
+import org.apache.flink.api.java.typeutils.TypeInfoParserTest.MyValue;
 
 import org.junit.Assert;
 import org.junit.Test;
-
-import com.google.common.collect.HashMultiset;
 
 /**
  *  Pojo Type tests
@@ -53,9 +52,10 @@ public class PojoTypeExtractionTest {
 		private int count; // duplicate
 	}
 
-	@Test(expected=RuntimeException.class)
+	@Test
 	public void testDuplicateFieldException() {
-		TypeExtractor.createTypeInfo(HasDuplicateField.class);
+		TypeInformation<?> ti = TypeExtractor.createTypeInfo(HasDuplicateField.class);
+		Assert.assertTrue(ti instanceof GenericTypeInfo<?>);
 	}
 
 	// test with correct pojo types
@@ -80,15 +80,19 @@ public class PojoTypeExtractionTest {
 		public float someFloat; // BasicType
 		public Tuple3<Long, Long, String> word; //Tuple Type with three basic types
 		public Object nothing; // generic type
-		public MyWritable hadoopCitizen;  // writableType
+		public MyValue valueType;  // writableType
 		public List<String> collection;
 	}
 
 	// all public test
 	public static class AllPublic extends ComplexNestedClass {
 		public ArrayList<String> somethingFancy; // generic type
-		public HashMultiset<Integer> fancyIds; // generic type
+		public FancyCollectionSubtype<Integer> fancyIds; // generic type
 		public String[]	fancyArray;			 // generic type
+	}
+
+	public static class FancyCollectionSubtype<T> extends HashSet<T> {
+		private static final long serialVersionUID = -3494469602638179921L;
 	}
 
 	public static class ParentSettingGenerics extends PojoWithGenerics<Integer, Long> {
@@ -216,18 +220,18 @@ public class PojoTypeExtractionTest {
 		List<FlatFieldDescriptor> ffd = new ArrayList<FlatFieldDescriptor>();
 		String[] fields = {"count",
 				"complex.date",
-				"complex.hadoopCitizen",
 				"complex.collection",
 				"complex.nothing",
 				"complex.someFloat",
 				"complex.someNumberWithÜnicödeNäme",
+				"complex.valueType",
 				"complex.word.f0",
 				"complex.word.f1",
 				"complex.word.f2"};
 		int[] positions = {9,
 				1,
-				2,
 				0,
+				2,
 				3,
 				4,
 				5,
@@ -281,16 +285,16 @@ public class PojoTypeExtractionTest {
 				Assert.assertEquals(Date.class, ffdE.getType().getTypeClass());
 			}
 			if(pos == 2) {
-				Assert.assertEquals(MyWritable.class, ffdE.getType().getTypeClass());
-			}
-			if(pos == 3) {
 				Assert.assertEquals(Object.class, ffdE.getType().getTypeClass());
 			}
-			if(pos == 4) {
+			if(pos == 3) {
 				Assert.assertEquals(Float.class, ffdE.getType().getTypeClass());
 			}
-			if(pos == 5) {
+			if(pos == 4) {
 				Assert.assertEquals(Integer.class, ffdE.getType().getTypeClass());
+			}
+			if(pos == 5) {
+				Assert.assertEquals(MyValue.class, ffdE.getType().getTypeClass());
 			}
 			if(pos == 6) {
 				Assert.assertEquals(Long.class, ffdE.getType().getTypeClass());
@@ -371,13 +375,13 @@ public class PojoTypeExtractionTest {
 				objectSeen = true;
 				Assert.assertEquals(new GenericTypeInfo<Object>(Object.class), field.getTypeInformation());
 				Assert.assertEquals(Object.class, field.getTypeInformation().getTypeClass());
-			} else if(name.equals("hadoopCitizen")) {
+			} else if(name.equals("valueType")) {
 				if(writableSeen) {
 					Assert.fail("already seen");
 				}
 				writableSeen = true;
-				Assert.assertEquals(new WritableTypeInfo<MyWritable>(MyWritable.class), field.getTypeInformation());
-				Assert.assertEquals(MyWritable.class, field.getTypeInformation().getTypeClass());
+				Assert.assertEquals(new ValueTypeInfo<>(MyValue.class), field.getTypeInformation());
+				Assert.assertEquals(MyValue.class, field.getTypeInformation().getTypeClass());
 			} else if(name.equals("collection")) {
 				if(collectionSeen) {
 					Assert.fail("already seen");
@@ -436,7 +440,7 @@ public class PojoTypeExtractionTest {
 				}
 				multisetSeen = true;
 				Assert.assertTrue(field.getTypeInformation() instanceof GenericTypeInfo);
-				Assert.assertEquals(HashMultiset.class, field.getTypeInformation().getTypeClass());
+				Assert.assertEquals(FancyCollectionSubtype.class, field.getTypeInformation().getTypeClass());
 			} else if(name.equals("fancyArray")) {
 				if(strArraySeen) {
 					Assert.fail("already seen");
@@ -444,7 +448,7 @@ public class PojoTypeExtractionTest {
 				strArraySeen = true;
 				Assert.assertEquals(BasicArrayTypeInfo.STRING_ARRAY_TYPE_INFO, field.getTypeInformation());
 				Assert.assertEquals(String[].class, field.getTypeInformation().getTypeClass());
-			} else if(Arrays.asList("date", "someNumberWithÜnicödeNäme", "someFloat", "word", "nothing", "hadoopCitizen", "collection").contains(name)) {
+			} else if(Arrays.asList("date", "someNumberWithÜnicödeNäme", "someFloat", "word", "nothing", "valueType", "collection").contains(name)) {
 				// ignore these, they are inherited from the ComplexNestedClass
 			}
 			else {
@@ -809,4 +813,49 @@ public class PojoTypeExtractionTest {
 		Assert.assertTrue(tti.getTypeAt(0) instanceof PojoTypeInfo);
 		Assert.assertTrue(tti.getTypeAt(1) instanceof PojoTypeInfo);
 	}
+
+	public static class PojoWithRecursiveGenericField<K,V> {
+		public PojoWithRecursiveGenericField<K,V> parent;
+		public PojoWithRecursiveGenericField(){}
+	}
+
+	@Test
+	public void testPojoWithRecursiveGenericField() {
+		TypeInformation<?> ti = TypeExtractor.createTypeInfo(PojoWithRecursiveGenericField.class);
+		Assert.assertTrue(ti instanceof PojoTypeInfo);
+		Assert.assertEquals(GenericTypeInfo.class, ((PojoTypeInfo) ti).getPojoFieldAt(0).getTypeInformation().getClass());
+	}
+
+	public static class MutualPojoA {
+		public MutualPojoB field;
+	}
+
+	public static class MutualPojoB {
+		public MutualPojoA field;
+	}
+
+	@Test
+	public void testPojosWithMutualRecursion() {
+		TypeInformation<?> ti = TypeExtractor.createTypeInfo(MutualPojoB.class);
+		Assert.assertTrue(ti instanceof PojoTypeInfo);
+		TypeInformation<?> pti = ((PojoTypeInfo) ti).getPojoFieldAt(0).getTypeInformation();
+		Assert.assertTrue(pti instanceof PojoTypeInfo);
+		Assert.assertEquals(GenericTypeInfo.class, ((PojoTypeInfo) pti).getPojoFieldAt(0).getTypeInformation().getClass());
+	}
+
+	public static class Container<T> {
+		public T field;
+	}
+
+	public static class MyType extends Container<Container<Object>> {}
+
+	@Test
+	public void testRecursivePojoWithTypeVariable() {
+		TypeInformation<?> ti = TypeExtractor.createTypeInfo(MyType.class);
+		Assert.assertTrue(ti instanceof PojoTypeInfo);
+		TypeInformation<?> pti = ((PojoTypeInfo) ti).getPojoFieldAt(0).getTypeInformation();
+		Assert.assertTrue(pti instanceof PojoTypeInfo);
+		Assert.assertEquals(GenericTypeInfo.class, ((PojoTypeInfo) pti).getPojoFieldAt(0).getTypeInformation().getClass());
+	}
+
 }

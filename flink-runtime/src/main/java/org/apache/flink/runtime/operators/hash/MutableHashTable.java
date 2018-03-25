@@ -42,7 +42,7 @@ import org.apache.flink.runtime.io.disk.iomanager.ChannelReaderInputView;
 import org.apache.flink.runtime.io.disk.iomanager.HeaderlessChannelReaderInputView;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.operators.util.BloomFilter;
-import org.apache.flink.runtime.util.MathUtils;
+import org.apache.flink.util.MathUtils;
 import org.apache.flink.util.MutableObjectIterator;
 
 /**
@@ -1480,28 +1480,17 @@ public class MutableHashTable<BT, PT> implements MemorySegmentSource {
 	public static byte assignPartition(int bucket, byte numPartitions) {
 		return (byte) (bucket % numPartitions);
 	}
-	
+
 	/**
-	 * This function hashes an integer value. It is adapted from Bob Jenkins' website
-	 * <a href="http://www.burtleburtle.net/bob/hash/integer.html">http://www.burtleburtle.net/bob/hash/integer.html</a>.
-	 * The hash function has the <i>full avalanche</i> property, meaning that every bit of the value to be hashed
-	 * affects every bit of the hash value. 
-	 * 
-	 * @param code The integer to be hashed.
-	 * @return The hash code for the integer.
-	 */
+	 * The level parameter is needed so that we can have different hash functions when we recursively apply
+	 * the partitioning, so that the working set eventually fits into memory.
+     */
 	public static int hash(int code, int level) {
 		final int rotation = level * 11;
-		
-		code = (code << rotation) | (code >>> -rotation);
 
-		code = (code + 0x7ed55d16) + (code << 12);
-		code = (code ^ 0xc761c23c) ^ (code >>> 19);
-		code = (code + 0x165667b1) + (code << 5);
-		code = (code + 0xd3a2646c) ^ (code << 9);
-		code = (code + 0xfd7046c5) + (code << 3);
-		code = (code ^ 0xb55a4f09) ^ (code >>> 16);
-		return code >= 0 ? code : -(code + 1);
+		code = Integer.rotateLeft(code, rotation);
+
+		return MathUtils.jenkinsHash(code);
 	}
 
 	public TypeComparator<PT> getProbeSideComparator () {
@@ -1749,10 +1738,11 @@ public class MutableHashTable<BT, PT> implements MemorySegmentSource {
 		}
 		
 		public BT next(BT reuse) {
-			// search unprobed record in bucket, while found none, move to next bucket and search.
+			// search unprobed record in bucket, while none found move to next bucket and search.
 			while (true) {
 				BT result = nextInBucket(reuse);
 				if (result == null) {
+					// return null while there are no more buckets.
 					if (!moveToNextOnHeapBucket()) {
 						return null;
 					}
@@ -1763,11 +1753,11 @@ public class MutableHashTable<BT, PT> implements MemorySegmentSource {
 		}
 		
 		public BT next() {
-			// search unProbed record in bucket, while found none, move to next bucket and search.
+			// search unprobed record in bucket, while none found move to next bucket and search.
 			while (true) {
 				BT result = nextInBucket();
 				if (result == null) {
-					// return null while there is no more bucket.
+					// return null while there are no more buckets.
 					if (!moveToNextOnHeapBucket()) {
 						return null;
 					}

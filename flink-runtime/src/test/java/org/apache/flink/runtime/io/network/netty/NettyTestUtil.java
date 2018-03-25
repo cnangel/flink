@@ -18,19 +18,18 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import io.netty.channel.Channel;
-
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.util.NetUtils;
 
 import scala.Tuple2;
+import org.apache.flink.shaded.netty4.io.netty.channel.Channel;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Test utility for Netty server and client setup.

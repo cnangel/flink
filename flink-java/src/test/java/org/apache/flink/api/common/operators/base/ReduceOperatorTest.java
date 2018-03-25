@@ -26,10 +26,13 @@ import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.functions.util.RuntimeUDFContext;
 import org.apache.flink.api.common.operators.UnaryOperatorInformation;
+import org.apache.flink.api.java.operators.ReduceOperator;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TypeInfoParser;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
+
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -41,8 +44,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.util.Arrays.asList;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+/**
+ * Tests for {@link ReduceOperator}.
+ */
 @SuppressWarnings({"serial", "unchecked"})
 public class ReduceOperatorTest implements java.io.Serializable {
 
@@ -54,7 +62,7 @@ public class ReduceOperatorTest implements java.io.Serializable {
 
 				@Override
 				public Tuple2<String, Integer> reduce(Tuple2<String, Integer> value1,
-				                                      Tuple2<String, Integer> value2) throws
+														Tuple2<String, Integer> value2) throws
 						Exception {
 					return new Tuple2<String, Integer>(value1.f0, value1.f1 + value2.f1);
 				}
@@ -79,7 +87,7 @@ public class ReduceOperatorTest implements java.io.Serializable {
 			List<Tuple2<String, Integer>> resultMutableSafe = op.executeOnCollections(input, null, executionConfig);
 			executionConfig.enableObjectReuse();
 			List<Tuple2<String, Integer>> resultRegular = op.executeOnCollections(input, null, executionConfig);
-			
+
 			Set<Tuple2<String, Integer>> resultSetMutableSafe = new HashSet<Tuple2<String, Integer>>(resultMutableSafe);
 			Set<Tuple2<String, Integer>> resultSetRegular = new HashSet<Tuple2<String, Integer>>(resultRegular);
 
@@ -107,7 +115,7 @@ public class ReduceOperatorTest implements java.io.Serializable {
 					RichReduceFunction<Tuple2<String, Integer>>() {
 				@Override
 				public Tuple2<String, Integer> reduce(Tuple2<String, Integer> value1,
-				                                      Tuple2<String, Integer> value2) throws
+														Tuple2<String, Integer> value2) throws
 						Exception {
 					return new Tuple2<String, Integer>(value1.f0, value1.f1 + value2.f1);
 				}
@@ -141,13 +149,25 @@ public class ReduceOperatorTest implements java.io.Serializable {
 					Integer>("foo", 3), new Tuple2<String, Integer>("bar", 2), new Tuple2<String,
 					Integer>("bar", 4)));
 
-			final TaskInfo taskInfo = new TaskInfo(taskName, 0, 1, 0);
+			final TaskInfo taskInfo = new TaskInfo(taskName, 1, 0, 1, 0);
 
 			ExecutionConfig executionConfig = new ExecutionConfig();
+
 			executionConfig.disableObjectReuse();
-			List<Tuple2<String, Integer>> resultMutableSafe = op.executeOnCollections(input, new RuntimeUDFContext(taskInfo, null, executionConfig, new HashMap<String, Future<Path>>(), new HashMap<String, Accumulator<?, ?>>()), executionConfig);
+			List<Tuple2<String, Integer>> resultMutableSafe = op.executeOnCollections(input,
+					new RuntimeUDFContext(taskInfo, null, executionConfig,
+							new HashMap<String, Future<Path>>(),
+							new HashMap<String, Accumulator<?, ?>>(),
+							new UnregisteredMetricsGroup()),
+					executionConfig);
+
 			executionConfig.enableObjectReuse();
-			List<Tuple2<String, Integer>> resultRegular = op.executeOnCollections(input, new RuntimeUDFContext(taskInfo, null, executionConfig, new HashMap<String, Future<Path>>(), new HashMap<String, Accumulator<?, ?>>()), executionConfig);
+			List<Tuple2<String, Integer>> resultRegular = op.executeOnCollections(input,
+					new RuntimeUDFContext(taskInfo, null, executionConfig,
+							new HashMap<String, Future<Path>>(),
+							new HashMap<String, Accumulator<?, ?>>(),
+							new UnregisteredMetricsGroup()),
+					executionConfig);
 
 			Set<Tuple2<String, Integer>> resultSetMutableSafe = new HashSet<Tuple2<String, Integer>>(resultMutableSafe);
 			Set<Tuple2<String, Integer>> resultSetRegular = new HashSet<Tuple2<String, Integer>>(resultRegular);

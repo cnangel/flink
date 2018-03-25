@@ -18,10 +18,7 @@
 
 package org.apache.flink.api.common.operators;
 
-import java.util.ArrayList;
-import java.util.List;
-
-import com.google.common.base.Joiner;
+import org.apache.commons.lang3.StringUtils;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.InvalidProgramException;
@@ -33,7 +30,12 @@ import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.typeutils.GenericTypeInfo;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 
-import com.google.common.base.Preconditions;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 @Internal
 public abstract class Keys<T> {
@@ -43,6 +45,8 @@ public abstract class Keys<T> {
 	public abstract int[] computeLogicalKeyPositions();
 
 	public abstract TypeInformation<?>[] getKeyFieldTypes();
+
+	public abstract TypeInformation<?>[] getOriginalKeyFieldTypes();
 
 	public abstract <E> void validateCustomPartitioner(Partitioner<E> partitioner, TypeInformation<E> typeInfo);
 
@@ -81,6 +85,7 @@ public abstract class Keys<T> {
 		private final TypeInformation<T> inputType;
 		private final TypeInformation<K> keyType;
 		private final List<FlatFieldDescriptor> keyFields;
+		private final TypeInformation<?>[] originalKeyTypes;
 
 		public SelectorFunctionKeys(KeySelector<T, K> keyExtractor, TypeInformation<T> inputType, TypeInformation<K> keyType) {
 
@@ -98,6 +103,7 @@ public abstract class Keys<T> {
 			this.inputType = inputType;
 			this.keyType = keyType;
 
+			this.originalKeyTypes = new TypeInformation[] {keyType};
 			if (keyType instanceof CompositeType) {
 				this.keyFields = ((CompositeType<T>)keyType).getFlatFields(ExpressionKeys.SELECT_ALL_CHAR);
 			}
@@ -141,7 +147,12 @@ public abstract class Keys<T> {
 			}
 			return fieldTypes;
 		}
-		
+
+		@Override
+		public TypeInformation<?>[] getOriginalKeyFieldTypes() {
+			return originalKeyTypes;
+		}
+
 		@Override
 		public <E> void validateCustomPartitioner(Partitioner<E> partitioner, TypeInformation<E> typeInfo) {
 
@@ -183,9 +194,13 @@ public abstract class Keys<T> {
 		
 		public static final String SELECT_ALL_CHAR = "*";
 		public static final String SELECT_ALL_CHAR_SCALA = "_";
-		
+		private static final Pattern WILD_CARD_REGEX = Pattern.compile("[\\.]?("
+				+ "\\" + SELECT_ALL_CHAR + "|"
+				+ "\\" + SELECT_ALL_CHAR_SCALA +")$");
+
 		// Flattened fields representing keys fields
 		private List<FlatFieldDescriptor> keyFields;
+		private TypeInformation<?>[] originalKeyTypes;
 
 		/**
 		 * ExpressionKeys that is defined by the full data type.
@@ -232,7 +247,8 @@ public abstract class Keys<T> {
 			} else {
 				rangeCheckFields(keyPositions, type.getArity() - 1);
 			}
-			Preconditions.checkArgument(keyPositions.length > 0, "Grouping fields can not be empty at this point");
+
+			checkArgument(keyPositions.length > 0, "Grouping fields can not be empty at this point");
 
 			// extract key field types
 			CompositeType<T> cType = (CompositeType<T>)type;
@@ -240,10 +256,13 @@ public abstract class Keys<T> {
 
 			// for each key position, find all (nested) field types
 			String[] fieldNames = cType.getFieldNames();
+			this.originalKeyTypes = new TypeInformation<?>[keyPositions.length];
 			ArrayList<FlatFieldDescriptor> tmpList = new ArrayList<>();
-			for (int keyPos : keyPositions) {
+			for (int i = 0; i < keyPositions.length; i++) {
+				int keyPos = keyPositions[i];
 				tmpList.clear();
 				// get all flat fields
+				this.originalKeyTypes[i] = cType.getTypeAt(keyPos);
 				cType.getFlatFields(fieldNames[keyPos], 0, tmpList);
 				// check if fields are of key type
 				for(FlatFieldDescriptor ffd : tmpList) {
@@ -266,15 +285,18 @@ public abstract class Keys<T> {
 		 * Create String-based (nested) field expression keys on a composite type.
 		 */
 		public ExpressionKeys(String[] keyExpressions, TypeInformation<T> type) {
-			Preconditions.checkNotNull(keyExpressions, "Field expression cannot be null.");
+			checkNotNull(keyExpressions, "Field expression cannot be null.");
 
 			this.keyFields = new ArrayList<>(keyExpressions.length);
 
 			if (type instanceof CompositeType){
 				CompositeType<T> cType = (CompositeType<T>) type;
+				this.originalKeyTypes = new TypeInformation<?>[keyExpressions.length];
 
 				// extract the keys on their flat position
-				for (String keyExpr : keyExpressions) {
+				for (int i = 0; i < keyExpressions.length; i++) {
+					String keyExpr = keyExpressions[i];
+
 					if (keyExpr == null) {
 						throw new InvalidProgramException("Expression key may not be null.");
 					}
@@ -294,6 +316,13 @@ public abstract class Keys<T> {
 					}
 					// add flat fields to key fields
 					keyFields.addAll(flatFields);
+
+					String strippedKeyExpr = WILD_CARD_REGEX.matcher(keyExpr).replaceAll("");
+					if (strippedKeyExpr.isEmpty()) {
+						this.originalKeyTypes[i] = type;
+					} else {
+						this.originalKeyTypes[i] = cType.getTypeAt(strippedKeyExpr);
+					}
 				}
 			}
 			else {
@@ -316,6 +345,7 @@ public abstract class Keys<T> {
 					// add full type as key
 					keyFields.add(new FlatFieldDescriptor(0, type));
 				}
+				this.originalKeyTypes = new TypeInformation[] {type};
 			}
 		}
 		
@@ -343,6 +373,11 @@ public abstract class Keys<T> {
 				fieldTypes[i] = keyFields.get(i).getType();
 			}
 			return fieldTypes;
+		}
+
+		@Override
+		public TypeInformation<?>[] getOriginalKeyFieldTypes() {
+			return originalKeyTypes;
 		}
 
 		@Override
@@ -375,8 +410,7 @@ public abstract class Keys<T> {
 
 		@Override
 		public String toString() {
-			Joiner join = Joiner.on('.');
-			return "ExpressionKeys: " + join.join(keyFields);
+			return "ExpressionKeys: " + StringUtils.join(keyFields, '.');
 		}
 
 		public static boolean isSortKey(int fieldPos, TypeInformation<?> type) {

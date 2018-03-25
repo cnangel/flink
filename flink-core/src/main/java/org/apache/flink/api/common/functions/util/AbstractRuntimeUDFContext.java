@@ -18,12 +18,6 @@
 
 package org.apache.flink.api.common.functions.util;
 
-import java.io.Serializable;
-import java.util.Collections;
-import java.util.Map;
-import java.util.concurrent.Future;
-
-import com.google.common.base.Preconditions;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.TaskInfo;
@@ -35,15 +29,27 @@ import org.apache.flink.api.common.accumulators.IntCounter;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.state.AggregatingState;
+import org.apache.flink.api.common.state.AggregatingStateDescriptor;
+import org.apache.flink.api.common.state.FoldingState;
+import org.apache.flink.api.common.state.FoldingStateDescriptor;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.state.OperatorState;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.ReducingState;
 import org.apache.flink.api.common.state.ReducingStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.metrics.MetricGroup;
+
+import java.io.Serializable;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.Future;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * A standalone implementation of the {@link RuntimeContext}, created by runtime UDF operators.
@@ -60,17 +66,21 @@ public abstract class AbstractRuntimeUDFContext implements RuntimeContext {
 	private final Map<String, Accumulator<?, ?>> accumulators;
 
 	private final DistributedCache distributedCache;
+	
+	private final MetricGroup metrics;
 
 	public AbstractRuntimeUDFContext(TaskInfo taskInfo,
 										ClassLoader userCodeClassLoader,
 										ExecutionConfig executionConfig,
 										Map<String, Accumulator<?,?>> accumulators,
-										Map<String, Future<Path>> cpTasks) {
-		this.taskInfo = Preconditions.checkNotNull(taskInfo);
+										Map<String, Future<Path>> cpTasks,
+										MetricGroup metrics) {
+		this.taskInfo = checkNotNull(taskInfo);
 		this.userCodeClassLoader = userCodeClassLoader;
 		this.executionConfig = executionConfig;
-		this.distributedCache = new DistributedCache(Preconditions.checkNotNull(cpTasks));
-		this.accumulators = Preconditions.checkNotNull(accumulators);
+		this.distributedCache = new DistributedCache(checkNotNull(cpTasks));
+		this.accumulators = checkNotNull(accumulators);
+		this.metrics = metrics;
 	}
 
 	@Override
@@ -89,8 +99,18 @@ public abstract class AbstractRuntimeUDFContext implements RuntimeContext {
 	}
 
 	@Override
+	public int getMaxNumberOfParallelSubtasks() {
+		return taskInfo.getMaxNumberOfParallelSubtasks();
+	}
+
+	@Override
 	public int getIndexOfThisSubtask() {
 		return taskInfo.getIndexOfThisSubtask();
+	}
+
+	@Override
+	public MetricGroup getMetricGroup() {
+		return metrics;
 	}
 
 	@Override
@@ -198,17 +218,23 @@ public abstract class AbstractRuntimeUDFContext implements RuntimeContext {
 	}
 
 	@Override
-	@Deprecated
 	@PublicEvolving
-	public <S> OperatorState<S> getKeyValueState(String name, Class<S> stateType, S defaultState) {
+	public <IN, ACC, OUT> AggregatingState<IN, OUT> getAggregatingState(AggregatingStateDescriptor<IN, ACC, OUT> stateProperties) {
 		throw new UnsupportedOperationException(
 				"This state is only accessible by functions executed on a KeyedStream");
 	}
 
 	@Override
-	@Deprecated
 	@PublicEvolving
-	public <S> OperatorState<S> getKeyValueState(String name, TypeInformation<S> stateType, S defaultState) {
+	@Deprecated
+	public <T, ACC> FoldingState<T, ACC> getFoldingState(FoldingStateDescriptor<T, ACC> stateProperties) {
+		throw new UnsupportedOperationException(
+				"This state is only accessible by functions executed on a KeyedStream");
+	}
+	
+	@Override
+	@PublicEvolving
+	public <UK, UV> MapState<UK, UV> getMapState(MapStateDescriptor<UK, UV> stateProperties) {
 		throw new UnsupportedOperationException(
 				"This state is only accessible by functions executed on a KeyedStream");
 	}

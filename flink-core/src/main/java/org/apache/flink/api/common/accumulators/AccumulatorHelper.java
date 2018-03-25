@@ -23,17 +23,21 @@ import org.apache.flink.util.SerializedValue;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Helper functions for the interaction with {@link Accumulator}.
+ */
 @Internal
 public class AccumulatorHelper {
 
 	/**
 	 * Merge two collections of accumulators. The second will be merged into the
 	 * first.
-	 * 
+	 *
 	 * @param target
 	 *            The collection of accumulators that will be updated
 	 * @param toMerge
@@ -58,7 +62,7 @@ public class AccumulatorHelper {
 	}
 
 	/**
-	 * Workaround method for type safety
+	 * Workaround method for type safety.
 	 */
 	private static <V, R extends Serializable> void mergeSingle(Accumulator<?, ?> target,
 															Accumulator<?, ?> toMerge) {
@@ -73,14 +77,13 @@ public class AccumulatorHelper {
 
 	/**
 	 * Compare both classes and throw {@link UnsupportedOperationException} if
-	 * they differ
+	 * they differ.
 	 */
 	@SuppressWarnings("rawtypes")
-	public static void compareAccumulatorTypes(Object name,
-												Class<? extends Accumulator> first,
-												Class<? extends Accumulator> second)
-			throws UnsupportedOperationException
-	{
+	public static void compareAccumulatorTypes(
+			Object name,
+			Class<? extends Accumulator> first,
+			Class<? extends Accumulator> second) throws UnsupportedOperationException {
 		if (first == null || second == null) {
 			throw new NullPointerException();
 		}
@@ -101,7 +104,7 @@ public class AccumulatorHelper {
 
 	/**
 	 * Transform the Map with accumulators into a Map containing only the
-	 * results
+	 * results.
 	 */
 	public static Map<String, Object> toResultMap(Map<String, Accumulator<?, ?>> accumulators) {
 		Map<String, Object> resultMap = new HashMap<String, Object>();
@@ -111,28 +114,29 @@ public class AccumulatorHelper {
 		return resultMap;
 	}
 
-	public static String getResultsFormated(Map<String, Object> map) {
+	public static String getResultsFormatted(Map<String, Object> map) {
 		StringBuilder builder = new StringBuilder();
 		for (Map.Entry<String, Object> entry : map.entrySet()) {
-			builder.append("- ").append(entry.getKey()).append(" (").append(entry.getValue().getClass().getName());
-			builder.append(")").append(": ").append(entry.getValue().toString()).append("\n");
+			builder
+				.append("- ")
+				.append(entry.getKey())
+				.append(" (")
+				.append(entry.getValue().getClass().getName())
+				.append(")");
+			if (entry.getValue() instanceof Collection) {
+				builder.append(" [").append(((Collection) entry.getValue()).size()).append(" elements]");
+			} else {
+				builder.append(": ").append(entry.getValue().toString());
+			}
+			builder.append(System.lineSeparator());
 		}
 		return builder.toString();
-	}
-
-	public static void resetAndClearAccumulators(Map<String, Accumulator<?, ?>> accumulators) {
-		if (accumulators != null) {
-			for (Map.Entry<String, Accumulator<?, ?>> entry : accumulators.entrySet()) {
-				entry.getValue().resetLocal();
-			}
-			accumulators.clear();
-		}
 	}
 
 	public static Map<String, Accumulator<?, ?>> copy(Map<String, Accumulator<?, ?>> accumulators) {
 		Map<String, Accumulator<?, ?>> result = new HashMap<String, Accumulator<?, ?>>();
 
-		for(Map.Entry<String, Accumulator<?, ?>> entry: accumulators.entrySet()){
+		for (Map.Entry<String, Accumulator<?, ?>> entry: accumulators.entrySet()){
 			result.put(entry.getKey(), entry.getValue().clone());
 		}
 
@@ -170,5 +174,4 @@ public class AccumulatorHelper {
 
 		return accumulators;
 	}
-
 }

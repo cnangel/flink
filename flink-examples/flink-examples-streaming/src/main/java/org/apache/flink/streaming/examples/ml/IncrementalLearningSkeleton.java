@@ -37,13 +37,11 @@ import java.util.concurrent.TimeUnit;
  * pre-computed model, which gets updated for the new inputs and new input data
  * for which the job provides predictions.
  *
- * <p>
- * This may serve as a base of a number of algorithms, e.g. updating an
+ * <p>This may serve as a base of a number of algorithms, e.g. updating an
  * incremental Alternating Least Squares model while also providing the
  * predictions.
  *
- * <p>
- * This example shows how to use:
+ * <p>This example shows how to use:
  * <ul>
  *   <li>Connected streams
  *   <li>CoFunctions
@@ -61,7 +59,6 @@ public class IncrementalLearningSkeleton {
 
 		// Checking input parameters
 		final ParameterTool params = ParameterTool.fromArgs(args);
-		System.out.println("Usage: IncrementalLearningSkeleton --output <path>");
 
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -148,7 +145,7 @@ public class IncrementalLearningSkeleton {
 		}
 	}
 
-	public static class LinearTimestamp implements AssignerWithPunctuatedWatermarks<Integer> {
+	private static class LinearTimestamp implements AssignerWithPunctuatedWatermarks<Integer> {
 		private static final long serialVersionUID = 1L;
 
 		private long counter = 0L;
@@ -184,7 +181,7 @@ public class IncrementalLearningSkeleton {
 	 * Creates newData using the model produced in batch-processing and the
 	 * up-to-date partial model.
 	 * <p>
-	 * By defaults emits the Integer 0 for every newData and the Integer 1
+	 * By default emits the Integer 0 for every newData and the Integer 1
 	 * for every model update.
 	 * </p>
 	 */

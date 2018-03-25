@@ -18,19 +18,19 @@
 
 package org.apache.flink.test.misc;
 
-import static org.junit.Assert.*;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.io.LocalCollectionOutputFormat;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.GenericInputSplit;
-import org.apache.flink.test.util.ForkableFlinkMiniCluster;
+import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
+import org.apache.flink.test.util.TestEnvironment;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.TestLogger;
+
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -39,26 +39,33 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
+
 /**
  * This test verifies that the auto parallelism is properly forwarded to the runtime.
  */
 @SuppressWarnings("serial")
-public class AutoParallelismITCase {
+public class AutoParallelismITCase extends TestLogger {
 
 	private static final int NUM_TM = 2;
 	private static final int SLOTS_PER_TM = 7;
 	private static final int PARALLELISM = NUM_TM * SLOTS_PER_TM;
 
-	private static ForkableFlinkMiniCluster cluster;
+	private static LocalFlinkMiniCluster cluster;
+
+	private static TestEnvironment env;
 
 	@BeforeClass
 	public static void setupCluster() {
 		Configuration config = new Configuration();
 		config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, NUM_TM);
 		config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, SLOTS_PER_TM);
-		cluster = new ForkableFlinkMiniCluster(config, false);
+		cluster = new LocalFlinkMiniCluster(config, false);
 
 		cluster.start();
+
+		env = new TestEnvironment(cluster, NUM_TM * SLOTS_PER_TM, false);
 	}
 
 	@AfterClass
@@ -69,17 +76,13 @@ public class AutoParallelismITCase {
 		catch (Throwable t) {
 			System.err.println("Error stopping cluster on shutdown");
 			t.printStackTrace();
-			fail("Cluster shutdown caused an exception: " + t.getMessage());
+			fail("ClusterClient shutdown caused an exception: " + t.getMessage());
 		}
 	}
-
 
 	@Test
 	public void testProgramWithAutoParallelism() {
 		try {
-			ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-					"localhost", cluster.getLeaderRPCPort());
-
 			env.setParallelism(ExecutionConfig.PARALLELISM_AUTO_MAX);
 			env.getConfig().disableSysoutLogging();
 
@@ -98,14 +101,6 @@ public class AutoParallelismITCase {
 		catch (Exception e) {
 			e.printStackTrace();
 			fail(e.getMessage());
-		}
-		finally {
-			try {
-				cluster.stop();
-			}
-			catch (Throwable t) {
-				// ignore exceptions on shutdown
-			}
 		}
 	}
 

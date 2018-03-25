@@ -18,20 +18,6 @@
 
 package org.apache.flink.api.common.operators;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.InvalidProgramException;
@@ -58,18 +44,33 @@ import org.apache.flink.api.common.operators.util.TypeComparable;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType;
 import org.apache.flink.api.common.typeutils.TypeComparator;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.local.LocalFileSystem;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.types.Value;
 import org.apache.flink.util.Visitor;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Execution utility for serial, local, collection-based executions of Flink programs.
  */
 @Internal
 public class CollectionExecutor {
-	
-	private static final boolean DEFAULT_MUTABLE_OBJECT_SAFE_MODE = true;
 	
 	private final Map<Operator<?>, List<?>> intermediateResults;
 	
@@ -106,6 +107,7 @@ public class CollectionExecutor {
 	
 	public JobExecutionResult execute(Plan program) throws Exception {
 		long startTime = System.currentTimeMillis();
+
 		initCache(program.getCachedFiles());
 		Collection<? extends GenericDataSinkBase<?>> sinks = program.getDataSinks();
 		for (Operator<?> sink : sinks) {
@@ -182,11 +184,14 @@ public class CollectionExecutor {
 		GenericDataSinkBase<IN> typedSink = (GenericDataSinkBase<IN>) sink;
 
 		// build the runtime context and compute broadcast variables, if necessary
-		TaskInfo taskInfo = new TaskInfo(typedSink.getName(), 0, 1, 0);
+		TaskInfo taskInfo = new TaskInfo(typedSink.getName(), 1, 0, 1, 0);
 		RuntimeUDFContext ctx;
+
+		MetricGroup metrics = new UnregisteredMetricsGroup();
+			
 		if (RichOutputFormat.class.isAssignableFrom(typedSink.getUserCodeWrapper().getUserCodeClass())) {
-			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators) :
-					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators);
+			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics) :
+					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics);
 		} else {
 			ctx = null;
 		}
@@ -199,11 +204,14 @@ public class CollectionExecutor {
 		@SuppressWarnings("unchecked")
 		GenericDataSourceBase<OUT, ?> typedSource = (GenericDataSourceBase<OUT, ?>) source;
 		// build the runtime context and compute broadcast variables, if necessary
-		TaskInfo taskInfo = new TaskInfo(typedSource.getName(), 0, 1, 0);
+		TaskInfo taskInfo = new TaskInfo(typedSource.getName(), 1, 0, 1, 0);
+		
 		RuntimeUDFContext ctx;
+
+		MetricGroup metrics = new UnregisteredMetricsGroup();
 		if (RichInputFormat.class.isAssignableFrom(typedSource.getUserCodeWrapper().getUserCodeClass())) {
-			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators) :
-					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators);
+			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics) :
+					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics);
 		} else {
 			ctx = null;
 		}
@@ -223,11 +231,13 @@ public class CollectionExecutor {
 		SingleInputOperator<IN, OUT, ?> typedOp = (SingleInputOperator<IN, OUT, ?>) operator;
 		
 		// build the runtime context and compute broadcast variables, if necessary
-		TaskInfo taskInfo = new TaskInfo(typedOp.getName(), 0, 1, 0);
+		TaskInfo taskInfo = new TaskInfo(typedOp.getName(), 1, 0, 1, 0);
 		RuntimeUDFContext ctx;
+
+		MetricGroup metrics = new UnregisteredMetricsGroup();
 		if (RichFunction.class.isAssignableFrom(typedOp.getUserCodeWrapper().getUserCodeClass())) {
-			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators) :
-					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators);
+			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics) :
+					new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics);
 			
 			for (Map.Entry<String, Operator<?>> bcInputs : operator.getBroadcastInputs().entrySet()) {
 				List<?> bcData = execute(bcInputs.getValue());
@@ -236,10 +246,8 @@ public class CollectionExecutor {
 		} else {
 			ctx = null;
 		}
-		
-		List<OUT> result = typedOp.executeOnCollections(inputData, ctx, executionConfig);
-		
-		return result;
+
+		return typedOp.executeOnCollections(inputData, ctx, executionConfig);
 	}
 	
 	private <IN1, IN2, OUT> List<OUT> executeBinaryOperator(DualInputOperator<?, ?, ?, ?> operator, int superStep) throws Exception {
@@ -263,11 +271,14 @@ public class CollectionExecutor {
 		DualInputOperator<IN1, IN2, OUT, ?> typedOp = (DualInputOperator<IN1, IN2, OUT, ?>) operator;
 		
 		// build the runtime context and compute broadcast variables, if necessary
-		TaskInfo taskInfo = new TaskInfo(typedOp.getName(), 0, 1, 0);
+		TaskInfo taskInfo = new TaskInfo(typedOp.getName(), 1, 0, 1, 0);
 		RuntimeUDFContext ctx;
+
+		MetricGroup metrics = new UnregisteredMetricsGroup();
+	
 		if (RichFunction.class.isAssignableFrom(typedOp.getUserCodeWrapper().getUserCodeClass())) {
-			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators) :
-				new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators);
+			ctx = superStep == 0 ? new RuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics) :
+				new IterationRuntimeUDFContext(taskInfo, classLoader, executionConfig, cachedFiles, accumulators, metrics);
 			
 			for (Map.Entry<String, Operator<?>> bcInputs : operator.getBroadcastInputs().entrySet()) {
 				List<?> bcData = execute(bcInputs.getValue());
@@ -276,10 +287,8 @@ public class CollectionExecutor {
 		} else {
 			ctx = null;
 		}
-		
-		List<OUT> result = typedOp.executeOnCollections(inputData1, inputData2, ctx, executionConfig);
-		
-		return result;
+
+		return typedOp.executeOnCollections(inputData1, inputData2, ctx, executionConfig);
 	}
 	
 	@SuppressWarnings("unchecked")
@@ -404,6 +413,9 @@ public class CollectionExecutor {
 			aggregators.put(a.getName(), a.getAggregator());
 		}
 
+		String convCriterionAggName = iteration.getAggregators().getConvergenceCriterionAggregatorName();
+		ConvergenceCriterion<Value> convCriterion = (ConvergenceCriterion<Value>) iteration.getAggregators().getConvergenceCriterion();
+
 		final int maxIterations = iteration.getMaximumNumberOfIterations();
 
 		for (int superstep = 1; superstep <= maxIterations; superstep++) {
@@ -428,10 +440,18 @@ public class CollectionExecutor {
 				solutionMap.put(wrapper, delta);
 			}
 
-			currentWorkset = (List<?>) execute(iteration.getNextWorkset(), superstep);
+			currentWorkset = execute(iteration.getNextWorkset(), superstep);
 
 			if (currentWorkset.isEmpty()) {
 				break;
+			}
+
+			// evaluate the aggregator convergence criterion
+			if (convCriterion != null && convCriterionAggName != null) {
+				Value v = aggregators.get(convCriterionAggName).getAggregate();
+				if (convCriterion.isConverged(superstep, v)) {
+					break;
+				}
 			}
 
 			// clear the dynamic results
@@ -523,8 +543,9 @@ public class CollectionExecutor {
 	private class IterationRuntimeUDFContext extends RuntimeUDFContext implements IterationRuntimeContext {
 
 		public IterationRuntimeUDFContext(TaskInfo taskInfo, ClassLoader classloader, ExecutionConfig executionConfig,
-											Map<String, Future<Path>> cpTasks, Map<String, Accumulator<?,?>> accumulators) {
-			super(taskInfo, classloader, executionConfig, cpTasks, accumulators);
+											Map<String, Future<Path>> cpTasks, Map<String, Accumulator<?, ?>> accumulators,
+											MetricGroup metrics) {
+			super(taskInfo, classloader, executionConfig, cpTasks, accumulators, metrics);
 		}
 
 		@Override
@@ -551,7 +572,7 @@ public class CollectionExecutor {
 
 		public CompletedFuture(Path entry) {
 			try{
-				LocalFileSystem fs = (LocalFileSystem) entry.getFileSystem();
+				LocalFileSystem fs = (LocalFileSystem) FileSystem.getUnguardedFileSystem(entry.toUri());
 				result = entry.isAbsolute() ? new Path(entry.toUri().getPath()): new Path(fs.getWorkingDirectory(),entry);
 			} catch (Exception e){
 				throw new RuntimeException("DistributedCache supports only local files for Collection Environments");

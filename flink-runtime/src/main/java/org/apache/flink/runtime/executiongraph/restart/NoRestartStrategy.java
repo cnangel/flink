@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.executiongraph.restart;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 
 /**
@@ -32,8 +33,8 @@ public class NoRestartStrategy implements RestartStrategy {
 	}
 
 	@Override
-	public void restart(ExecutionGraph executionGraph) {
-		throw new RuntimeException("NoRestartStrategy does not support restart.");
+	public void restart(RestartCallback restarter, ScheduledExecutor executor) {
+		throw new UnsupportedOperationException("NoRestartStrategy does not support restart.");
 	}
 
 	/**
@@ -42,12 +43,22 @@ public class NoRestartStrategy implements RestartStrategy {
 	 * @param configuration Configuration object which is ignored
 	 * @return NoRestartStrategy instance
 	 */
-	public static NoRestartStrategy create(Configuration configuration) {
-		return new NoRestartStrategy();
+	public static NoRestartStrategyFactory createFactory(Configuration configuration) {
+		return new NoRestartStrategyFactory();
 	}
 
 	@Override
 	public String toString() {
 		return "NoRestartStrategy";
+	}
+
+	public static class NoRestartStrategyFactory extends RestartStrategyFactory {
+
+		private static final long serialVersionUID = -1809462525812787862L;
+
+		@Override
+		public RestartStrategy createRestartStrategy() {
+			return new NoRestartStrategy();
+		}
 	}
 }

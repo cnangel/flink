@@ -18,10 +18,6 @@
 
 package org.apache.flink.runtime.operators.testutils;
 
-import java.util.Collections;
-import java.util.Map;
-import java.util.concurrent.Future;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.TaskInfo;
@@ -29,26 +25,60 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
+import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
+import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.memory.MemoryManager;
-import org.apache.flink.runtime.state.StateHandle;
+import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
+import org.apache.flink.runtime.query.KvStateRegistry;
+import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.state.TaskStateManager;
+import org.apache.flink.runtime.state.TestTaskStateManager;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.Future;
 
 public class DummyEnvironment implements Environment {
 
-	private final TaskInfo taskInfo;
 	private final JobID jobId = new JobID();
 	private final JobVertexID jobVertexId = new JobVertexID();
+	private final ExecutionAttemptID executionId = new ExecutionAttemptID();
 	private final ExecutionConfig executionConfig = new ExecutionConfig();
+	private final TaskInfo taskInfo;
+	private KvStateRegistry kvStateRegistry = new KvStateRegistry();
+	private TaskStateManager taskStateManager;
+	private final AccumulatorRegistry accumulatorRegistry = new AccumulatorRegistry(jobId, executionId);
+
+	public DummyEnvironment() {
+		this("Test Job", 1, 0, 1);
+	}
 
 	public DummyEnvironment(String taskName, int numSubTasks, int subTaskIndex) {
-		this.taskInfo = new TaskInfo(taskName, subTaskIndex, numSubTasks, 0);
+		this(taskName, numSubTasks, subTaskIndex, numSubTasks);
+	}
+
+	public DummyEnvironment(String taskName, int numSubTasks, int subTaskIndex, int maxParallelism) {
+		this.taskInfo = new TaskInfo(taskName, maxParallelism, subTaskIndex, numSubTasks, 0);
+		this.taskStateManager = new TestTaskStateManager();
+	}
+
+	public void setKvStateRegistry(KvStateRegistry kvStateRegistry) {
+		this.kvStateRegistry = kvStateRegistry;
+	}
+
+	public KvStateRegistry getKvStateRegistry() {
+		return kvStateRegistry;
 	}
 
 	@Override
@@ -68,22 +98,27 @@ public class DummyEnvironment implements Environment {
 
 	@Override
 	public ExecutionAttemptID getExecutionId() {
-		return null;
+		return executionId;
 	}
 
 	@Override
 	public Configuration getTaskConfiguration() {
-		return null;
+		return new Configuration();
 	}
 
 	@Override
 	public TaskManagerRuntimeInfo getTaskManagerInfo() {
-		return null;
+		return new TestingTaskManagerRuntimeInfo();
+	}
+
+	@Override
+	public TaskMetricGroup getMetricGroup() {
+		return UnregisteredMetricGroups.createUnregisteredTaskMetricGroup();
 	}
 
 	@Override
 	public Configuration getJobConfiguration() {
-		return null;
+		return new Configuration();
 	}
 
 	@Override
@@ -108,7 +143,7 @@ public class DummyEnvironment implements Environment {
 
 	@Override
 	public ClassLoader getUserClassLoader() {
-		return null;
+		return getClass().getClassLoader();
 	}
 
 	@Override
@@ -122,16 +157,36 @@ public class DummyEnvironment implements Environment {
 	}
 
 	@Override
+	public TaskStateManager getTaskStateManager() {
+		return taskStateManager;
+	}
+
+	@Override
 	public AccumulatorRegistry getAccumulatorRegistry() {
-		return null;
+		return accumulatorRegistry;
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId) {
+	public TaskKvStateRegistry getTaskKvStateRegistry() {
+		return kvStateRegistry.createTaskRegistry(jobId, jobVertexId);
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId, StateHandle<?> state) {
+	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics) {
+	}
+
+	@Override
+	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics, TaskStateSnapshot subtaskState) {
+	}
+
+	@Override
+	public void declineCheckpoint(long checkpointId, Throwable cause) {
+		throw new UnsupportedOperationException();
+	}
+
+	@Override
+	public void failExternally(Throwable cause) {
+		throw new UnsupportedOperationException("DummyEnvironment does not support external task failure.");
 	}
 
 	@Override
@@ -154,4 +209,11 @@ public class DummyEnvironment implements Environment {
 		return null;
 	}
 
+	@Override
+	public TaskEventDispatcher getTaskEventDispatcher() {
+		throw new UnsupportedOperationException();
+	}
+	public void setTaskStateManager(TaskStateManager taskStateManager) {
+		this.taskStateManager = taskStateManager;
+	}
 }

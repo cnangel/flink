@@ -15,28 +15,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.java;
 
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.scala.FlinkILoop;
 import org.apache.flink.client.program.ProgramInvocationException;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.RemoteStreamEnvironment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironmentFactory;
 import org.apache.flink.streaming.api.graph.StreamGraph;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 
-
+/**
+ * A {@link RemoteStreamEnvironment} for the Scala shell.
+ */
 public class ScalaShellRemoteStreamEnvironment extends RemoteStreamEnvironment {
 	private static final Logger LOG = LoggerFactory.getLogger(ScalaShellRemoteStreamEnvironment.class);
 
 	// reference to Scala Shell, for access to virtual directory
 	private FlinkILoop flinkILoop;
+
 	/**
 	 * Creates a new RemoteStreamEnvironment that points to the master
 	 * (JobManager) described by the given host name and port.
@@ -45,43 +52,45 @@ public class ScalaShellRemoteStreamEnvironment extends RemoteStreamEnvironment {
 	 *				 program should be executed.
 	 * @param port	 The port of the master (JobManager), where the program should
 	 *				 be executed.
+	 * @param configuration The configuration to be used for the environment
 	 * @param jarFiles The JAR files with code that needs to be shipped to the
 	 *				 cluster. If the program uses user-defined functions,
 	 *				 user-defined input formats, or any libraries, those must be
 	 */
-	public ScalaShellRemoteStreamEnvironment(String host, int port, FlinkILoop flinkILoop, String... jarFiles) {
-		super(host, port, jarFiles);
+	public ScalaShellRemoteStreamEnvironment(
+		String host,
+		int port,
+		FlinkILoop flinkILoop,
+		Configuration configuration,
+		String... jarFiles) {
+
+		super(host, port, configuration, jarFiles);
 		this.flinkILoop = flinkILoop;
 	}
+
 	/**
 	 * Executes the remote job.
 	 *
 	 * @param streamGraph
 	 *            Stream Graph to execute
+	 * @param jarFiles
+	 * 			  List of jar file URLs to ship to the cluster
 	 * @return The result of the job execution, containing elapsed time and accumulators.
 	 */
-	protected JobExecutionResult executeRemotely(StreamGraph streamGraph) throws ProgramInvocationException {
-		URL jarUrl = null;
+	@Override
+	protected JobExecutionResult executeRemotely(StreamGraph streamGraph, List<URL> jarFiles) throws ProgramInvocationException {
+		URL jarUrl;
 		try {
 			jarUrl = flinkILoop.writeFilesToDisk().getAbsoluteFile().toURI().toURL();
 		} catch (MalformedURLException e) {
-			e.printStackTrace();
+			throw new ProgramInvocationException("Could not write the user code classes to disk.", e);
 		}
 
-		jarFiles.add(jarUrl);
-		// get external (library) jars
-		String[] extJars = this.flinkILoop.getExternalJars();
+		List<URL> allJarFiles = new ArrayList<>(jarFiles.size() + 1);
+		allJarFiles.addAll(jarFiles);
+		allJarFiles.add(jarUrl);
 
-		for (String extJar : extJars) {
-			URL extJarUrl = null;
-			try {
-				extJarUrl = new File(extJar).getAbsoluteFile().toURI().toURL();
-			} catch (MalformedURLException e) {
-				e.printStackTrace();
-			}
-			jarFiles.add(extJarUrl);
-		}
-		return super.executeRemotely(streamGraph);
+		return super.executeRemotely(streamGraph, allJarFiles);
 	}
 
 	public void setAsContext() {
@@ -94,7 +103,6 @@ public class ScalaShellRemoteStreamEnvironment extends RemoteStreamEnvironment {
 		};
 		initializeContextEnvironment(factory);
 	}
-
 
 	public static void disableAllContextAndOtherEnvironments() {
 		// we create a context environment that prevents the instantiation of further

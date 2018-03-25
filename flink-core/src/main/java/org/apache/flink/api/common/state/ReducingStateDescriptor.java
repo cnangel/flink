@@ -24,7 +24,7 @@ import org.apache.flink.api.common.functions.RichFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 
-import static java.util.Objects.requireNonNull;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * {@link StateDescriptor} for {@link ReducingState}. This can be used to create partitioned
@@ -35,9 +35,9 @@ import static java.util.Objects.requireNonNull;
  */
 @PublicEvolving
 public class ReducingStateDescriptor<T> extends StateDescriptor<ReducingState<T>, T> {
+
 	private static final long serialVersionUID = 1L;
-	
-	
+
 	private final ReduceFunction<T> reduceFunction;
 
 	/**
@@ -47,12 +47,12 @@ public class ReducingStateDescriptor<T> extends StateDescriptor<ReducingState<T>
 	 * consider using the {@link #ReducingStateDescriptor(String, ReduceFunction, TypeInformation)} constructor.
 	 *
 	 * @param name The (unique) name for the state.
-	 * @param reduceFunction The {@code ReduceFunction} used to aggregate the state.   
+	 * @param reduceFunction The {@code ReduceFunction} used to aggregate the state.
 	 * @param typeClass The type of the values in the state.
 	 */
 	public ReducingStateDescriptor(String name, ReduceFunction<T> reduceFunction, Class<T> typeClass) {
 		super(name, typeClass, null);
-		this.reduceFunction = requireNonNull(reduceFunction);
+		this.reduceFunction = checkNotNull(reduceFunction);
 
 		if (reduceFunction instanceof RichFunction) {
 			throw new UnsupportedOperationException("ReduceFunction of ReducingState can not be a RichFunction.");
@@ -68,7 +68,7 @@ public class ReducingStateDescriptor<T> extends StateDescriptor<ReducingState<T>
 	 */
 	public ReducingStateDescriptor(String name, ReduceFunction<T> reduceFunction, TypeInformation<T> typeInfo) {
 		super(name, typeInfo, null);
-		this.reduceFunction = requireNonNull(reduceFunction);
+		this.reduceFunction = checkNotNull(reduceFunction);
 	}
 
 	/**
@@ -80,14 +80,14 @@ public class ReducingStateDescriptor<T> extends StateDescriptor<ReducingState<T>
 	 */
 	public ReducingStateDescriptor(String name, ReduceFunction<T> reduceFunction, TypeSerializer<T> typeSerializer) {
 		super(name, typeSerializer, null);
-		this.reduceFunction = requireNonNull(reduceFunction);
+		this.reduceFunction = checkNotNull(reduceFunction);
 	}
 
 	// ------------------------------------------------------------------------
-	
+
 	@Override
-	public ReducingState<T> bind(StateBackend stateBackend) throws Exception {
-		return stateBackend.createReducingState(this);
+	public ReducingState<T> bind(StateBinder stateBinder) throws Exception {
+		return stateBinder.createReducingState(this);
 	}
 
 	/**
@@ -95,5 +95,10 @@ public class ReducingStateDescriptor<T> extends StateDescriptor<ReducingState<T>
 	 */
 	public ReduceFunction<T> getReduceFunction() {
 		return reduceFunction;
+	}
+
+	@Override
+	public Type getType() {
+		return Type.REDUCING;
 	}
 }

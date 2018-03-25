@@ -18,8 +18,7 @@
 
 package org.apache.flink.api.java.tuple;
 
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
+import org.apache.flink.util.FileUtils;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -29,6 +28,8 @@ import java.util.Scanner;
 
 /**
  * Source code generator for tuple classes and classes which depend on the arity of tuples.
+ *
+ * <p>This class is responsible for generating the various {@link Tuple} and TupleBuilder classes.
  */
 class TupleGenerator {
 
@@ -57,14 +58,13 @@ class TupleGenerator {
 
 	private static final int LAST = 25;
 
-	
 	public static void main(String[] args) throws Exception {
-		System.err.println("Current directory "+System.getProperty("user.dir"));
+		System.err.println("Current directory " + System.getProperty("user.dir"));
 		String rootDir = ROOT_DIRECTORY;
-		if(args.length > 0) {
+		if (args.length > 0) {
 			rootDir = args[0] + "/" + ROOT_DIRECTORY;
 		}
-		System.err.println("Using root directory: "+rootDir);
+		System.err.println("Using root directory: " + rootDir);
 		File root = new File(rootDir);
 
 		createTupleClasses(root);
@@ -85,14 +85,14 @@ class TupleGenerator {
 	}
 
 	private static void insertCodeIntoFile(String code, File file) throws IOException {
-		String fileContent = Files.toString(file, Charsets.UTF_8);
-		
+		String fileContent = FileUtils.readFileUtf8(file);
+
 		try (Scanner s = new Scanner(fileContent)) {
 			StringBuilder sb = new StringBuilder();
 			String line;
-	
+
 			boolean indicatorFound = false;
-	
+
 			// add file beginning
 			while (s.hasNextLine() && (line = s.nextLine()) != null) {
 				sb.append(line).append("\n");
@@ -101,19 +101,19 @@ class TupleGenerator {
 					break;
 				}
 			}
-	
-			if(!indicatorFound) {
+
+			if (!indicatorFound) {
 				System.out.println("No indicator found in '" + file + "'. Will skip code generation.");
 				s.close();
 				return;
 			}
-	
+
 			// add generator signature
 			sb.append("\t// GENERATED FROM ").append(TupleGenerator.class.getName()).append(".\n");
-	
+
 			// add tuple dependent code
 			sb.append(code).append("\n");
-	
+
 			// skip generated code
 			while (s.hasNextLine() && (line = s.nextLine()) != null) {
 				if (line.contains(END_INDICATOR)) {
@@ -121,16 +121,15 @@ class TupleGenerator {
 					break;
 				}
 			}
-	
+
 			// add file ending
 			while (s.hasNextLine() && (line = s.nextLine()) != null) {
 				sb.append(line).append("\n");
 			}
-			Files.write(sb.toString(), file, Charsets.UTF_8);
+			FileUtils.writeFileUtf8(file, sb.toString());
 		}
 	}
 
-	
 	private static void modifyTupleType(File root) throws IOException {
 		// generate code
 		StringBuilder sb = new StringBuilder();
@@ -167,7 +166,7 @@ class TupleGenerator {
 		// package and imports
 		w.println("package " + PACKAGE + ';');
 		w.println();
-		w.println("import PublicInterface;");
+		w.println("import org.apache.flink.annotation.Public;");
 		w.println("import org.apache.flink.util.StringUtils;");
 		w.println();
 
@@ -176,17 +175,24 @@ class TupleGenerator {
 		w.println(" * A tuple with " + numFields + " fields. Tuples are strongly typed; each field may be of a separate type.");
 		w.println(" * The fields of the tuple can be accessed directly as public fields (f0, f1, ...) or via their position");
 		w.println(" * through the {@link #getField(int)} method. The tuple field positions start at zero.");
-		w.println(" * <p>");
-		w.println(" * Tuples are mutable types, meaning that their fields can be re-assigned. This allows functions that work");
-		w.println(" * with Tuples to reuse objects in order to reduce pressure on the garbage collector.");
 		w.println(" *");
+		w.println(" * <p>Tuples are mutable types, meaning that their fields can be re-assigned. This allows functions that work");
+		w.println(" * with Tuples to reuse objects in order to reduce pressure on the garbage collector.</p>");
+		w.println(" *");
+		w.println(" * <p>Warning: If you subclass " + className + ", then be sure to either <ul>");
+		w.println(" *  <li> not add any new fields, or </li>");
+		w.println(" *  <li> make it a POJO, and always declare the element type of your DataStreams/DataSets to your descendant");
+		w.println(" *       type. (That is, if you have a \"class Foo extends " + className + "\", then don't use instances of");
+		w.println(" *       Foo in a DataStream&lt;" + className + "&gt; / DataSet&lt;" + className + "&gt;, but declare it as");
+		w.println(" *       DataStream&lt;Foo&gt; / DataSet&lt;Foo&gt;.) </li>");
+		w.println(" * </ul></p>");
 		w.println(" * @see Tuple");
 		w.println(" *");
 		for (int i = 0; i < numFields; i++) {
 			w.println(" * @param <" + GEN_TYPE_PREFIX + i + "> The type of field " + i);
 		}
 		w.println(" */");
-		w.println("@PublicInterface");
+		w.println("@Public");
 		w.print("public class " + className + "<");
 		for (int i = 0; i < numFields; i++) {
 			if (i > 0) {
@@ -236,10 +242,11 @@ class TupleGenerator {
 		w.println("\t}");
 		w.println();
 
-
 		// arity accessor
 		w.println("\t@Override");
-		w.println("\tpublic int getArity() { return " + numFields + "; }");
+		w.println("\tpublic int getArity() {");
+		w.println("\t\treturn " + numFields + ";");
+		w.println("\t}");
 		w.println();
 
 		// accessor getter method
@@ -324,20 +331,26 @@ class TupleGenerator {
 
 		w.println();
 		w.println("\t/**");
-		w.println("\t * Deep equality for tuples by calling equals() on the tuple members");
+		w.println("\t * Deep equality for tuples by calling equals() on the tuple members.");
 		w.println("\t * @param o the object checked for equality");
 		w.println("\t * @return true if this is equal to o.");
 		w.println("\t */");
 		w.println("\t@Override");
 		w.println("\tpublic boolean equals(Object o) {");
-		w.println("\t\tif(this == o) { return true; }");
-		w.println("\t\tif (!(o instanceof " + className + ")) { return false; }");
+		w.println("\t\tif (this == o) {");
+		w.println("\t\t\treturn true;");
+		w.println("\t\t}");
+		w.println("\t\tif (!(o instanceof " + className + ")) {");
+		w.println("\t\t\treturn false;");
+		w.println("\t\t}");
 		w.println("\t\t@SuppressWarnings(\"rawtypes\")");
 		w.println("\t\t" + className + " tuple = (" + className + ") o;");
 		for (int i = 0; i < numFields; i++) {
 			String field = "f" + i;
-			w.println("\t\tif (" + field + " != null ? !" + field +".equals(tuple." +
-					field + ") : tuple." + field + " != null) { return false; }");
+			w.println("\t\tif (" + field + " != null ? !" + field + ".equals(tuple." +
+					field + ") : tuple." + field + " != null) {");
+			w.println("\t\t\treturn false;");
+			w.println("\t\t}");
 		}
 		w.println("\t\treturn true;");
 		w.println("\t}");
@@ -353,15 +366,13 @@ class TupleGenerator {
 		w.println("\t\treturn result;");
 		w.println("\t}");
 
-
-		String tupleTypes = "<";
+		String tupleTypes = "";
 		for (int i = 0; i < numFields; i++) {
 			tupleTypes += "T" + i;
 			if (i < numFields - 1) {
-				tupleTypes += ",";
+				tupleTypes += ", ";
 			}
 		}
-		tupleTypes += ">";
 
 		w.println();
 		w.println("\t/**");
@@ -370,9 +381,9 @@ class TupleGenerator {
 		w.println("\t*/");
 		w.println("\t@Override");
 		w.println("\t@SuppressWarnings(\"unchecked\")");
-		w.println("\tpublic " + className + tupleTypes + " copy(){ ");
+		w.println("\tpublic " + className + "<" + tupleTypes + "> copy() {");
 
-		w.print("\t\treturn new " + className + tupleTypes + "(this.f0");
+		w.print("\t\treturn new " + className + "<>(this.f0");
 		if (numFields > 1) {
 			w.println(",");
 		}
@@ -395,12 +406,16 @@ class TupleGenerator {
 		w.println("\t * instead of");
 		w.println("\t * {@code new Tuple3<Integer, Double, String>(n, x, s)}");
 		w.println("\t */");
-		w.println("\tpublic static " + tupleTypes + " " + className + tupleTypes + " of" + paramList + " {");
-		w.print("\t\treturn new " + className + tupleTypes + "(");
-		for(int i = 0; i < numFields; i++) {
-			w.print("value" + i);
-			if(i < numFields - 1) {
-				w.print(", ");
+		w.println("\tpublic static <" + tupleTypes + "> " + className + "<" + tupleTypes + "> of" + paramList + " {");
+
+		w.print("\t\treturn new " + className + "<>(value0");
+		if (numFields > 1) {
+			w.println(",");
+		}
+		for (int i = 1; i < numFields; i++) {
+			w.print("\t\t\tvalue" + i);
+			if (i < numFields - 1) {
+				w.println(",");
 			}
 		}
 		w.println(");");
@@ -411,7 +426,7 @@ class TupleGenerator {
 	}
 
 	private static void createTupleBuilderClasses(File root) throws FileNotFoundException {
-		File dir = getPackage(root, PACKAGE+"."+BUILDER_SUFFIX);
+		File dir = getPackage(root, PACKAGE + "." + BUILDER_SUFFIX);
 
 		for (int i = FIRST; i <= LAST; i++) {
 			File tupleFile = new File(dir, "Tuple" + i + "Builder.java");
@@ -442,15 +457,24 @@ class TupleGenerator {
 		// package and imports
 		w.println("package " + PACKAGE + "." + BUILDER_SUFFIX + ';');
 		w.println();
+		w.println("import org.apache.flink.annotation.Public;");
+		w.println("import " + PACKAGE + ".Tuple" + numFields + ";");
+		w.println();
 		w.println("import java.util.ArrayList;");
 		w.println("import java.util.List;");
 		w.println();
-		w.println("import PublicInterface;");
-		w.println("import " + PACKAGE + ".Tuple" + numFields + ";");
-		w.println();
+
+		// class javadoc
+		w.println("/**");
+		w.println(" * A builder class for {@link Tuple" + numFields + "}.");
+		w.println(" *");
+		for (int i = 0; i < numFields; i++) {
+			w.println(" * @param <" + GEN_TYPE_PREFIX + i + "> The type of field " + i);
+		}
+		w.println(" */");
 
 		// class declaration
-		w.println("@PublicInterface");
+		w.println("@Public");
 		w.print("public class " + className);
 		printGenericsString(w, numFields);
 		w.println(" {");
@@ -497,7 +521,7 @@ class TupleGenerator {
 		w.println("}");
 	}
 
-	private static String HEADER =
+	private static final String HEADER =
 		"/*\n"
 		+ " * Licensed to the Apache Software Foundation (ASF) under one\n"
 		+ " * or more contributor license agreements.  See the NOTICE file\n"
@@ -517,9 +541,8 @@ class TupleGenerator {
 		+ " */" +
 		"\n" +
 		"\n" +
-		"\n" +
 		"// --------------------------------------------------------------\n" +
 		"//  THIS IS A GENERATED SOURCE FILE. DO NOT EDIT!\n" +
 		"//  GENERATED FROM " + TupleGenerator.class.getName() + ".\n" +
-		"// --------------------------------------------------------------\n\n\n";
+		"// --------------------------------------------------------------\n\n";
 }

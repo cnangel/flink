@@ -26,35 +26,34 @@ import akka.dispatch.OnComplete;
 import akka.pattern.Patterns;
 import akka.util.Timeout;
 
-import com.google.common.base.Preconditions;
-import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.akka.FlinkUntypedActor;
 import org.apache.flink.runtime.clusterframework.messages.CheckAndAllocateContainers;
 import org.apache.flink.runtime.clusterframework.messages.FatalErrorOccurred;
 import org.apache.flink.runtime.clusterframework.messages.InfoMessage;
-import org.apache.flink.runtime.clusterframework.messages.RegisterInfoMessageListenerSuccessful;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResource;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResourceFailed;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResourceManagerSuccessful;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResourceSuccessful;
 import org.apache.flink.runtime.clusterframework.messages.NewLeaderAvailable;
+import org.apache.flink.runtime.clusterframework.messages.NotifyResourceStarted;
 import org.apache.flink.runtime.clusterframework.messages.RegisterInfoMessageListener;
+import org.apache.flink.runtime.clusterframework.messages.RegisterInfoMessageListenerSuccessful;
 import org.apache.flink.runtime.clusterframework.messages.RegisterResourceManager;
+import org.apache.flink.runtime.clusterframework.messages.RegisterResourceManagerSuccessful;
 import org.apache.flink.runtime.clusterframework.messages.RemoveResource;
 import org.apache.flink.runtime.clusterframework.messages.ResourceRemoved;
 import org.apache.flink.runtime.clusterframework.messages.SetWorkerPoolSize;
 import org.apache.flink.runtime.clusterframework.messages.StopCluster;
+import org.apache.flink.runtime.clusterframework.messages.StopClusterSuccessful;
 import org.apache.flink.runtime.clusterframework.messages.TriggerRegistrationAtJobManager;
 import org.apache.flink.runtime.clusterframework.messages.UnRegisterInfoMessageListener;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.clusterframework.types.ResourceIDRetrievable;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalListener;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
+import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.JobManagerMessages.LeaderSessionMessage;
 
-import org.apache.flink.runtime.messages.RegistrationMessages;
-import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.Preconditions;
 
 import scala.concurrent.Future;
 import scala.concurrent.duration.Duration;
@@ -88,12 +87,12 @@ import static java.util.Objects.requireNonNull;
  *     <li>At some point, the TaskManager processes will have started and send a registration
  *         message to the JobManager. The JobManager will perform
  *         a lookup with the ResourceManager to check if it really started this TaskManager.
- *         The method {@link #workerRegistered(ResourceID)} will be called
+ *         The method {@link #workerStarted(ResourceID)} will be called
  *         to inform about a registered worker.</li>
  * </ol>
  *
  */
-public abstract class FlinkResourceManager<WorkerType extends ResourceID> extends FlinkUntypedActor {
+public abstract class FlinkResourceManager<WorkerType extends ResourceIDRetrievable> extends FlinkUntypedActor {
 
 	/** The exit code with which the process is stopped in case of a fatal error */
 	protected static final int EXIT_CODE_FATAL_ERROR = -13;
@@ -112,8 +111,9 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	/** The service to find the right leader JobManager (to support high availability) */
 	private final LeaderRetrievalService leaderRetriever;
 
-	/** The currently registered resources */
-	private final Map<ResourceID, WorkerType> registeredWorkers;
+	/** Map which contains the workers from which we know that they have been successfully started
+	 * in a container. This notification is sent by the JM when a TM tries to register at it. */
+	private final Map<ResourceID, WorkerType> startedWorkers;
 
 	/** List of listeners for info messages */
 	private final Set<ActorRef> infoMessageListeners;
@@ -140,7 +140,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 			LeaderRetrievalService leaderRetriever) {
 		this.config = requireNonNull(flinkConfig);
 		this.leaderRetriever = requireNonNull(leaderRetriever);
-		this.registeredWorkers = new HashMap<>();
+		this.startedWorkers = new HashMap<>();
 
 		FiniteDuration lt;
 		try {
@@ -148,7 +148,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 		}
 		catch (Exception e) {
 			lt = new FiniteDuration(
-				Duration.apply(ConfigConstants.DEFAULT_AKKA_LOOKUP_TIMEOUT).toMillis(),
+				Duration.apply(AkkaOptions.LOOKUP_TIMEOUT.defaultValue()).toMillis(),
 				TimeUnit.MILLISECONDS);
 		}
 		this.messageTimeout = lt;
@@ -229,9 +229,9 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 
 			// --- lookup of registered resources
 
-			else if (message instanceof RegisterResource) {
-				RegisterResource msg = (RegisterResource) message;
-				handleRegisterResource(sender(), msg.getTaskManager(), msg.getRegisterMessage());
+			else if (message instanceof NotifyResourceStarted) {
+				NotifyResourceStarted msg = (NotifyResourceStarted) message;
+				handleResourceStarted(sender(), msg.getResourceID());
 			}
 
 			// --- messages about JobManager leader status and registration
@@ -254,6 +254,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 			else if (message instanceof StopCluster) {
 				StopCluster msg = (StopCluster) message;
 				shutdownCluster(msg.finalStatus(), msg.message());
+				sender().tell(decorateMessage(StopClusterSuccessful.getInstance()), ActorRef.noSender());
 			}
 
 			// --- miscellaneous messages
@@ -270,6 +271,11 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 
 			else if (message instanceof UnRegisterInfoMessageListener) {
 				infoMessageListeners.remove(sender());
+			}
+
+			else if (message instanceof FatalErrorOccurred) {
+				FatalErrorOccurred fatalErrorOccurred = (FatalErrorOccurred) message;
+				fatalError(fatalErrorOccurred.message(), fatalErrorOccurred.error());
 			}
 
 			// --- unknown messages
@@ -306,70 +312,68 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	}
 
 	/**
-	 * Gets the number of currently registered TaskManagers.
+	 * Gets the number of currently started TaskManagers.
 	 *
-	 * @return The number of currently registered TaskManagers.
+	 * @return The number of currently started TaskManagers.
 	 */
-	public int getNumberOfRegisteredTaskManagers() {
-		return registeredWorkers.size();
+	public int getNumberOfStartedTaskManagers() {
+		return startedWorkers.size();
 	}
 
 	/**
 	 * Gets the currently registered resources.
 	 * @return
 	 */
-	public Collection<WorkerType> getRegisteredTaskManagers() {
-		return registeredWorkers.values();
+	public Collection<WorkerType> getStartedTaskManagers() {
+		return startedWorkers.values();
 	}
 
 	/**
-	 * Gets the registered worker for a given resource ID, if one is available.
+	 * Gets the started worker for a given resource ID, if one is available.
 	 *
 	 * @param resourceId The resource ID for the worker.
 	 * @return True if already registered, otherwise false
 	 */
-	public boolean isRegistered(ResourceID resourceId) {
-		return registeredWorkers.containsKey(resourceId);
+	public boolean isStarted(ResourceID resourceId) {
+		return startedWorkers.containsKey(resourceId);
 	}
 
 	/**
-	 * Gets an iterable for all currently registered TaskManagers.
+	 * Gets an iterable for all currently started TaskManagers.
 	 *
-	 * @return All currently registered TaskManagers.
+	 * @return All currently started TaskManagers.
 	 */
-	public Collection<WorkerType> allRegisteredWorkers() {
-		return registeredWorkers.values();
+	public Collection<WorkerType> allStartedWorkers() {
+		return startedWorkers.values();
 	}
 
 	/**
-	 * Register a resource on which a TaskManager has been started
+	 * Tells the ResourceManager that a TaskManager had been started in a container with the given
+	 * resource id.
+	 *
 	 * @param jobManager The sender (JobManager) of the message
-	 * @param taskManager The task manager who wants to register
-	 * @param msg The task manager's registration message
+	 * @param resourceID The resource id of the started TaskManager
 	 */
-	private void handleRegisterResource(ActorRef jobManager, ActorRef taskManager,
-				RegistrationMessages.RegisterTaskManager msg) {
-
-		ResourceID resourceID = msg.resourceId();
-		try {
-			Preconditions.checkNotNull(resourceID);
-			WorkerType newWorker = workerRegistered(msg.resourceId());
-			WorkerType oldWorker = registeredWorkers.put(resourceID, newWorker);
+	private void handleResourceStarted(ActorRef jobManager, ResourceID resourceID) {
+		if (resourceID != null) {
+			// check if resourceID is already registered (TaskManager may send duplicate register messages)
+			WorkerType oldWorker = startedWorkers.get(resourceID);
 			if (oldWorker != null) {
-				LOG.warn("Worker {} had been registered before.", resourceID);
-			}
-			jobManager.tell(decorateMessage(
-				new RegisterResourceSuccessful(taskManager, msg)),
-				self());
-		} catch (Exception e) {
-			// This may happen on duplicate task manager registration message to the job manager
-			LOG.warn("TaskManager resource registration failed for {}", resourceID);
+				LOG.debug("Notification that TaskManager {} had been started was sent before.", resourceID);
+			} else {
+				WorkerType newWorker = workerStarted(resourceID);
 
-			// tell the JobManager about the failure
-			String eStr = ExceptionUtils.stringifyException(e);
-			sender().tell(decorateMessage(
-				new RegisterResourceFailed(taskManager, resourceID, eStr)), self());
+				if (newWorker != null) {
+					startedWorkers.put(resourceID, newWorker);
+					LOG.info("TaskManager {} has started.", resourceID);
+				} else {
+					LOG.info("TaskManager {} has not been started by this resource manager.", resourceID);
+				}
+			}
 		}
+
+		// Acknowledge the resource registration
+		jobManager.tell(decorateMessage(Acknowledge.get()), self());
 	}
 
 	/**
@@ -380,9 +384,9 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 */
 	private void removeRegisteredResource(ResourceID resourceId) {
 
-		WorkerType worker = registeredWorkers.remove(resourceId);
+		WorkerType worker = startedWorkers.remove(resourceId);
 		if (worker != null) {
-			releaseRegisteredWorker(worker);
+			releaseStartedWorker(worker);
 		} else {
 			LOG.warn("Resource {} could not be released", resourceId);
 		}
@@ -400,15 +404,15 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 * @param leaderAddress The address (Akka URL) of the new leader. Null if there is currently no leader.
 	 * @param leaderSessionID The unique session ID marking the leadership session.
 	 */
-	protected void newJobManagerLeaderAvailable(String leaderAddress, UUID leaderSessionID) {
+	private void newJobManagerLeaderAvailable(String leaderAddress, UUID leaderSessionID) {
 		LOG.debug("Received new leading JobManager {}. Connecting.", leaderAddress);
 
 		// disconnect from the current leader (no-op if no leader yet)
 		jobManagerLostLeadership();
 
-		// a null leader address means that only a leader disconnect
+		// a null leader session id means that only a leader disconnect
 		// happened, without a new leader yet
-		if (leaderAddress != null) {
+		if (leaderSessionID != null && leaderAddress != null) {
 			// the leaderSessionID implicitly filters out success and failure messages
 			// that come after leadership changed again
 			this.leaderSessionID = leaderSessionID;
@@ -422,7 +426,8 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 *
 	 * @param leaderAddress The akka actor URL of the new leader JobManager.
 	 */
-	private void triggerConnectingToJobManager(String leaderAddress) {
+	protected void triggerConnectingToJobManager(String leaderAddress) {
+
 		LOG.info("Trying to associate with JobManager leader " + leaderAddress);
 
 		final Object registerMessage = decorateMessage(new RegisterResourceManager(self()));
@@ -436,21 +441,21 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 
 			@Override
 			public void onComplete(Throwable failure, Object msg) {
-				if (msg != null) {
-					if (msg instanceof LeaderSessionMessage &&
-						((LeaderSessionMessage) msg).message() instanceof RegisterResourceManagerSuccessful)
-					{
-						self().tell(msg, ActorRef.noSender());
-					}
-					else {
-						LOG.error("Invalid response type to registration at JobManager: {}", msg);
+				// only process if we haven't been connected in the meantime
+				if (jobManager == null) {
+					if (msg != null) {
+						if (msg instanceof LeaderSessionMessage &&
+							((LeaderSessionMessage) msg).message() instanceof RegisterResourceManagerSuccessful) {
+							self().tell(msg, ActorRef.noSender());
+						} else {
+							LOG.error("Invalid response type to registration at JobManager: {}", msg);
+							self().tell(retryMessage, ActorRef.noSender());
+						}
+					} else {
+						// no success
+						LOG.error("Resource manager could not register at JobManager", failure);
 						self().tell(retryMessage, ActorRef.noSender());
 					}
-				}
-				else {
-					// no success
-					LOG.error("Resource manager could not register at JobManager", failure);
-					self().tell(retryMessage, ActorRef.noSender());
 				}
 			}
 
@@ -458,8 +463,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	}
 
 	/**
-	 * This method disassociates from the current leader JobManager. All currently registered
-	 * TaskManagers are put under "awaiting registration".
+	 * This method disassociates from the current leader JobManager.
 	 */
 	private void jobManagerLostLeadership() {
 		if (jobManager != null) {
@@ -469,8 +473,6 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 			leaderSessionID = null;
 
 			infoMessageListeners.clear();
-
-			registeredWorkers.clear();
 		}
 	}
 
@@ -489,9 +491,6 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 
 			jobManager = newJobManagerLeader;
 
-			// inform the framework that we have updated the leader
-			leaderUpdated();
-
 			if (workers.size() > 0) {
 				LOG.info("Received TaskManagers that were registered at the leader JobManager. " +
 						"Trying to consolidate.");
@@ -507,8 +506,9 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 
 					// put the consolidated TaskManagers into our bookkeeping
 					for (WorkerType worker : consolidated) {
-						registeredWorkers.put(worker, worker);
-						toHandle.remove(worker);
+						ResourceID resourceID = worker.getResourceID();
+						startedWorkers.put(resourceID, worker);
+						toHandle.remove(resourceID);
 					}
 				}
 				catch (Throwable t) {
@@ -532,7 +532,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	}
 
 	// ------------------------------------------------------------------------
-	//  Cluster Shutdown
+	//  ClusterClient Shutdown
 	// ------------------------------------------------------------------------
 
 	private void shutdownCluster(ApplicationStatus status, String diagnostics) {
@@ -565,7 +565,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 			"Number of pending workers pending registration should never be below 0.");
 
 		// see how many workers we want, and whether we have enough
-		int allAvailableAndPending = registeredWorkers.size() +
+		int allAvailableAndPending = startedWorkers.size() +
 			numWorkersPending + numWorkersPendingRegistration;
 
 		int missing = designatedPoolSize - allAvailableAndPending;
@@ -616,7 +616,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 * @param message An informational message that explains why the worker failed.
 	 */
 	public void notifyWorkerFailed(ResourceID resourceID, String message) {
-		WorkerType worker = registeredWorkers.remove(resourceID);
+		WorkerType worker = startedWorkers.remove(resourceID);
 		if (worker != null) {
 			jobManager.tell(
 				decorateMessage(
@@ -637,12 +637,6 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 *                   restarted.
 	 */
 	protected abstract void initialize() throws Exception;
-
-	/**
-	 * Provides codes to handle an update of the leader (relevant for HA). The framework has to deal
-	 * with the consequences of a leader update.
-	 */
-	protected abstract void leaderUpdated();
 
 	/**
 	 * The framework specific code for shutting down the application. This should report the
@@ -679,16 +673,16 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	protected abstract void releasePendingWorker(ResourceID resourceID);
 
 	/**
-	 * Trigger a release of a registered worker.
+	 * Trigger a release of a started worker.
 	 * @param resourceID The worker resource id
 	 */
-	protected abstract void releaseRegisteredWorker(WorkerType resourceID);
+	protected abstract void releaseStartedWorker(WorkerType resourceID);
 
 	/**
-	 * Callback when a worker was registered.
+	 * Callback when a worker was started.
 	 * @param resourceID The worker resource id
 	 */
-	protected abstract WorkerType workerRegistered(ResourceID resourceID) throws Exception;
+	protected abstract WorkerType workerStarted(ResourceID resourceID);
 
 	/**
 	 * This method is called when the resource manager starts after a failure and reconnects to
@@ -744,7 +738,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 * Starts the resource manager actors.
 	 * @param configuration The configuration for the resource manager
 	 * @param actorSystem The actor system to start the resource manager in
-	 * @param leaderRetriever The leader retriever service to intialize the resource manager
+	 * @param leaderRetriever The leader retriever service to initialize the resource manager
 	 * @param resourceManagerClass The class of the ResourceManager to be started
 	 * @return ActorRef of the resource manager
 	 */
@@ -763,7 +757,7 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 	 * Starts the resource manager actors.
 	 * @param configuration The configuration for the resource manager
 	 * @param actorSystem The actor system to start the resource manager in
-	 * @param leaderRetriever The leader retriever service to intialize the resource manager
+	 * @param leaderRetriever The leader retriever service to initialize the resource manager
 	 * @param resourceManagerClass The class of the ResourceManager to be started
 	 * @param resourceManagerActorName The name of the resource manager actor.
 	 * @return ActorRef of the resource manager
@@ -775,8 +769,19 @@ public abstract class FlinkResourceManager<WorkerType extends ResourceID> extend
 			Class<? extends FlinkResourceManager<?>> resourceManagerClass,
 			String resourceManagerActorName) {
 
-		Props resourceMasterProps = Props.create(resourceManagerClass, configuration, leaderRetriever);
+		Props resourceMasterProps = getResourceManagerProps(
+			resourceManagerClass,
+			configuration,
+			leaderRetriever);
 
 		return actorSystem.actorOf(resourceMasterProps, resourceManagerActorName);
+	}
+
+	public static Props getResourceManagerProps(
+		Class<? extends FlinkResourceManager> resourceManagerClass,
+		Configuration configuration,
+		LeaderRetrievalService leaderRetrievalService) {
+
+		return Props.create(resourceManagerClass, configuration, leaderRetrievalService);
 	}
 }
